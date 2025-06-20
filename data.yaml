@@ -1,0 +1,8 @@
+path: c:/c/CV-Toolkit/yolov8-all-in-one/datasets
+train: images/train
+val: images/val
+test: images/test
+
+nc: 2
+names: ['wave', 'nowave']
+weights: [1.0, 1.0]

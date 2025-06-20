@@ -1,0 +1,16 @@
+weights: weight/best.pt
+input_video: input.mp4
+output_video: output.mp4
+confidence: 0.7
+names: ['wave', 'nowave']
+device: cpu
+alarm_dir: alarms
+alarm_classes: [0, 1]  # 0: wave, 1: nowave
+alarm_duration: 3  # 秒
+detect_interval_ms: 500  # 检测间隔，单位ms
+cooldown_seconds: 60  # 报警冷却时长，单位秒
+streams:
+  - name: cam1
+    url: rtsp://example.com/stream1
+  - name: cam2
+    url: rtsp://example.com/stream2 

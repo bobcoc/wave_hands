@@ -1,0 +1,6 @@
+ultralytics>=12.0.0
+opencv-python
+pyyaml
+numpy>=1.21.0
+matplotlib>=3.5.0
+pathlib2>=2.3.0 
