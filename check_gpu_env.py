@@ -10,7 +10,6 @@ except ImportError:
     sys.exit(1)
 
 print(f"PyTorch 版本: {torch.__version__}")
-print(f"PyTorch 编译时CUDA版本: {getattr(torch.version, 'cuda', '未知')}")
 
 cuda_available = torch.cuda.is_available()
 if not cuda_available:
@@ -23,12 +22,6 @@ for i in range(num_gpus):
     name = torch.cuda.get_device_name(i)
     print(f"  GPU {i}: {name}")
 
-# 可选：尝试获取CUDA驱动版本
-try:
-    cuda_driver_version = torch._C._cuda_getDriverVersion()
-    print(f"CUDA 驱动版本: {cuda_driver_version // 1000}.{(cuda_driver_version % 1000) // 10}")
-except Exception:
-    print("无法获取CUDA驱动版本信息。")
 # 检查当前 GPU 设备
-print(torch.cuda.current_device())
+print(f"当前GPU设备: {torch.cuda.current_device()}")
 print("\n环境检测完成，您的PyTorch已支持GPU加速，可放心运行detect_video.py。") 

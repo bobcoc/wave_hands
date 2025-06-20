@@ -60,7 +60,7 @@ def worker(stream_cfg, config):
     wave_counts = None
     nowave_counts = None
     alarm_buf_len = None
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    fourcc = cv2.VideoWriter.fourcc(*'mp4v')
     print(f"[{name}] 进程启动，流地址: {url}")
     while True:
         now = time.time()

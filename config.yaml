@@ -10,7 +10,7 @@ alarm_duration: 3  # 秒
 detect_interval_ms: 500  # 检测间隔，单位ms
 cooldown_seconds: 60  # 报警冷却时长，单位秒
 streams:
-  - name: cam1
-    url: rtsp://example.com/stream1
-  - name: cam2
-    url: rtsp://example.com/stream2 
+  - name: A202
+    url: rtsp://admin:HuaWei@12345@10.0.14.78:554/LiveMedia/ch1/Media1
+  - name: A203
+    url: rtsp://admin:HuaWei@12345@10.0.14.79:554/LiveMedia/ch1/Media1
