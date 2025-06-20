@@ -29,5 +29,6 @@ try:
     print(f"CUDA 驱动版本: {cuda_driver_version // 1000}.{(cuda_driver_version % 1000) // 10}")
 except Exception:
     print("无法获取CUDA驱动版本信息。")
-
+# 检查当前 GPU 设备
+print(torch.cuda.current_device())
 print("\n环境检测完成，您的PyTorch已支持GPU加速，可放心运行detect_video.py。") 
