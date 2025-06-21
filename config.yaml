@@ -3,14 +3,36 @@ input_video: input.mp4
 output_video: output.mp4
 confidence: 0.7
 names: ['wave', 'nowave']
-device: cpu
+device: cuda
 alarm_dir: alarms
 alarm_classes: [0, 1]  # 0: wave, 1: nowave
 alarm_duration: 3  # 秒
-detect_interval_ms: 500  # 检测间隔，单位ms
+detect_interval_ms: 1000  # 检测间隔，单位ms
 cooldown_seconds: 60  # 报警冷却时长，单位秒
+# 错误处理设置
+skip_frame_on_error: true  # 错误时跳过帧
+max_error_count: 3  # 最大连续错误数
+error_recovery_delay: 1  # 错误恢复延迟(秒)
+# 视频解码设置
+video_decode:
+  use_hardware_decode: true
+  buffer_size: 10
+  decode_backend: "ffmpeg"
+  fallback_to_software: true
+  # 容错设置
+  rtsp_transport: "tcp"  # 使用TCP传输，更稳定
+  skip_frame_on_error: true  # 错误时跳过帧
+  max_error_count: 10  # 最大连续错误数
+  error_recovery_delay: 0.5  # 错误恢复延迟(秒)
+  # 自动重连设置
+  auto_reconnect: true  # 启用自动重连
+  reconnect_interval: 60  # 定期重连间隔(秒)，5分钟
+  max_decode_errors: 50  # 最大解码错误数后强制重连
+  error_check_window: 30  # 错误统计窗口(秒)
 streams:
-  - name: A202
+  - name: B603
     url: rtsp://admin:HuaWei@12345@10.0.14.78:554/LiveMedia/ch1/Media1
-  - name: A203
+  - name: B605
     url: rtsp://admin:HuaWei@12345@10.0.14.79:554/LiveMedia/ch1/Media1
+  - name: B606
+    url: rtsp://admin:HuaWei@12345@10.0.14.77:554/LiveMedia/ch1/Media1
