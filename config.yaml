@@ -1,7 +1,8 @@
-weights: weight/best.pt
-input_video: input.mp4
+weights: yolov8n.pt
+input_video: C:\c\wave_hands\test_videos_20250622_100947\B605_3min_20250622_100957.mov
 output_video: output.mp4
-confidence: 0.7
+confidence: 0.3
+wave_change_threshold: 3  # 挥手判定所需宽高比变化次数
 names: ['wave', 'nowave']
 device: cuda
 alarm_dir: alarms
