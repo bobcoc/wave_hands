@@ -109,6 +109,8 @@ class MediaPipeWaveDetector:
                 'frame_count': 0,
                 'hand_raised_start_frame': None,  # 开始举手的帧号
                 'continuous_raised_frames': 0,    # 连续举手帧数
+                'not_raised_frames': 0,           # 连续未举手帧数
+                'total_raised_frames': 0,         # 总举手帧数（不会因短暂放下而重置）
                 'is_recording': False,            # 是否正在录制
                 'recording_start_frame': None     # 开始录制的帧号
             }
@@ -150,35 +152,49 @@ class MediaPipeWaveDetector:
             return False
     
     def update_hand_tracking(self, person_id, hand_raised, current_frame):
-        """更新举手状态跟踪"""
+        """更新举手状态跟踪（优化版：短暂放下手不重置计时）"""
         tracker_data = self.person_trackers[person_id]
+        reset_threshold_frames = int(2.0 * self.fps)  # 2秒对应的帧数
         
         if hand_raised:
-            # 如果是刚开始举手
+            # 举手状态
+            tracker_data['not_raised_frames'] = 0  # 重置未举手计数
+            
+            # 如果是第一次举手或刚从长时间未举手状态恢复
             if tracker_data['hand_raised_start_frame'] is None:
                 tracker_data['hand_raised_start_frame'] = current_frame
-                tracker_data['continuous_raised_frames'] = 1
+                tracker_data['total_raised_frames'] = 1
                 tracker_data['is_recording'] = True
                 tracker_data['recording_start_frame'] = current_frame
             else:
-                # 继续举手
-                tracker_data['continuous_raised_frames'] += 1
-        else:
-            # 没有举手，重置状态
-            tracker_data['hand_raised_start_frame'] = None
-            tracker_data['continuous_raised_frames'] = 0
+                # 继续累计举手时间
+                tracker_data['total_raised_frames'] += 1
             
-            # 检查是否应该停止录制
-            if tracker_data['is_recording']:
-                frames_since_recording = current_frame - tracker_data['recording_start_frame']
-                recording_duration = frames_since_recording / self.fps
+            tracker_data['continuous_raised_frames'] = tracker_data['total_raised_frames']
+        else:
+            # 没有举手状态
+            tracker_data['not_raised_frames'] += 1
+            
+            # 检查是否持续未举手超过2秒
+            if tracker_data['not_raised_frames'] >= reset_threshold_frames:
+                # 超过2秒未举手，重置所有状态
+                tracker_data['hand_raised_start_frame'] = None
+                tracker_data['continuous_raised_frames'] = 0
+                tracker_data['total_raised_frames'] = 0
+                tracker_data['not_raised_frames'] = 0
                 
-                if recording_duration >= self.recording_duration:
-                    tracker_data['is_recording'] = False
-                    tracker_data['recording_start_frame'] = None
+                # 检查是否应该停止录制
+                if tracker_data['is_recording']:
+                    frames_since_recording = current_frame - tracker_data['recording_start_frame']
+                    recording_duration = frames_since_recording / self.fps
+                    
+                    if recording_duration >= self.recording_duration:
+                        tracker_data['is_recording'] = False
+                        tracker_data['recording_start_frame'] = None
+            # 如果未举手时间少于2秒，保持当前的total_raised_frames不变
         
-        # 计算连续举手时间
-        continuous_time = tracker_data['continuous_raised_frames'] / self.fps if tracker_data['continuous_raised_frames'] > 0 else 0
+        # 计算显示的连续时间（基于total_raised_frames）
+        continuous_time = tracker_data['total_raised_frames'] / self.fps if tracker_data['total_raised_frames'] > 0 else 0
         
         # 判断是否达到报警条件
         should_alarm = continuous_time >= self.alarm_threshold
@@ -290,11 +306,15 @@ class MediaPipeWaveDetector:
                 font_scale = 0.6
                 thickness = 2
                 
+                # 获取更详细的状态信息
+                tracker_data = self.person_trackers.get(person_id, {})
+                not_raised_time = tracker_data.get('not_raised_frames', 0) / self.fps
+                
                 labels = [
                     f"ID{person_id}: {status} (Teacher)",
                     f"Height:{person_info['height_pixels']:.0f}px",
-                    f"Raised:{person_info['hand_raised']} Time:{person_info['continuous_time']:.1f}s",
-                    f"Recording:{person_info['is_recording']} Alarm:{person_info['should_alarm']}"
+                    f"Raised:{person_info['hand_raised']} Total:{person_info['continuous_time']:.1f}s",
+                    f"Down:{not_raised_time:.1f}s Alarm:{person_info['should_alarm']}"
                 ]
                 
                 # 计算文本背景尺寸
@@ -424,6 +444,13 @@ def main():
                 # 显示状态详情
                 if person_info['hand_raised']:
                     print(f"    All fingers above wrist")
+                else:
+                    # 显示未举手时间，帮助理解计时逻辑
+                    tracker_data = detector.person_trackers.get(person_id, {})
+                    not_raised_time = tracker_data.get('not_raised_frames', 0) / detector.fps
+                    if not_raised_time > 0:
+                        print(f"    Hand down for {not_raised_time:.1f}s (reset after 2.0s)")
+                
                 if person_info['is_recording']:
                     print(f"    Recording in progress...")
                 if person_info['should_alarm']:
