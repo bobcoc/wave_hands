@@ -104,53 +104,70 @@ class MediaPipeWaveDetector:
             self.next_person_id += 1
             self.person_trackers[new_id] = {
                 'last_center': center_pixels,
-                'right_arm_angle_history': deque(maxlen=self.window_len),
                 'frame_count': 0
             }
             return new_id
     
-    def calculate_arm_angle(self, shoulder, elbow, wrist):
-        """计算右手臂角度（替代边界框尺寸变化检测）"""
+    def is_hand_raised(self, shoulder, wrist):
+        """检测手是否举起（手腕高于肩膀）"""
         try:
-            # 计算上臂和前臂向量
-            upper_arm = [elbow.x - shoulder.x, elbow.y - shoulder.y]
-            lower_arm = [wrist.x - elbow.x, wrist.y - elbow.y]
-            
-            # 计算向量夹角
-            dot_product = upper_arm[0] * lower_arm[0] + upper_arm[1] * lower_arm[1]
-            norm_upper = math.sqrt(upper_arm[0]**2 + upper_arm[1]**2)
-            norm_lower = math.sqrt(lower_arm[0]**2 + lower_arm[1]**2)
-            
-            if norm_upper == 0 or norm_lower == 0:
-                return None
-                
-            cos_angle = dot_product / (norm_upper * norm_lower)
-            cos_angle = max(-1.0, min(1.0, cos_angle))  # 数值稳定性
-            angle = math.degrees(math.acos(cos_angle))
-            
-            return angle
+            # Y坐标越小越高（图像坐标系）
+            return wrist.y < shoulder.y
         except:
-            return None
+            return False
     
-    def detect_angle_changes(self, angle_history, change_threshold=15):
-        """检测角度变化次数（对应原版的detect_dimension_changes函数）"""
-        if len(angle_history) < 2:
-            return 0, []
+    def count_extended_fingers(self, hand_landmarks):
+        """检测张开的手指数量"""
+        if not hand_landmarks:
+            return 0
         
-        changes = []
-        change_count = 0
-        
-        angles = list(angle_history)
-        for i in range(1, len(angles)):
-            prev_angle = angles[i-1]
-            curr_angle = angles[i]
-            angle_change = abs(curr_angle - prev_angle)
+        try:
+            landmarks = hand_landmarks.landmark
+            extended_count = 0
             
-            if angle_change >= change_threshold:
-                change_count += 1
-                changes.append(('angle_change', i, prev_angle, curr_angle, angle_change))
+            # 拇指：比较拇指尖和拇指第一关节的X坐标
+            thumb_tip = landmarks[4]  # THUMB_TIP
+            thumb_ip = landmarks[3]   # THUMB_IP
+            if abs(thumb_tip.x - thumb_ip.x) > 0.04:  # 拇指张开的阈值
+                extended_count += 1
+            
+            # 其他四指：比较指尖和指根的Y坐标
+            finger_tips = [8, 12, 16, 20]  # INDEX, MIDDLE, RING, PINKY tips
+            finger_pips = [6, 10, 14, 18]  # INDEX, MIDDLE, RING, PINKY pips
+            
+            for tip_idx, pip_idx in zip(finger_tips, finger_pips):
+                tip = landmarks[tip_idx]
+                pip = landmarks[pip_idx]
+                # 指尖比指节更高（Y坐标更小）表示手指张开
+                if tip.y < pip.y - 0.02:  # 张开阈值
+                    extended_count += 1
+            
+            return extended_count
+        except:
+            return 0
+    
+    def detect_wave_gesture(self, pose_landmarks, right_hand_landmarks):
+        """检测挥手手势：举手 + 张开五指"""
+        if not pose_landmarks:
+            return False, 0, False
         
-        return change_count, changes
+        try:
+            # 获取右肩和右手腕关键点
+            right_shoulder = pose_landmarks[self.mp_holistic.PoseLandmark.RIGHT_SHOULDER]
+            right_wrist = pose_landmarks[self.mp_holistic.PoseLandmark.RIGHT_WRIST]
+            
+            # 检测是否举手
+            hand_raised = self.is_hand_raised(right_shoulder, right_wrist)
+            
+            # 检测张开的手指数量
+            extended_fingers = self.count_extended_fingers(right_hand_landmarks)
+            
+            # 挥手判定：举手 + 至少4个手指张开
+            is_waving = hand_raised and extended_fingers >= 4
+            
+            return is_waving, extended_fingers, hand_raised
+        except:
+            return False, 0, False
     
     def process_frame(self, frame, frame_idx):
         """处理单帧（主要检测逻辑，对应原版main函数的核心部分）"""
@@ -179,41 +196,27 @@ class MediaPipeWaveDetector:
                     tracker_data = self.person_trackers[person_id]
                     tracker_data['frame_count'] += 1
                     
-                    # 检测右手挥手动作
+                    # 检测右手挥手手势（举手 + 张开五指）
                     try:
-                        right_shoulder = landmarks[self.mp_holistic.PoseLandmark.RIGHT_SHOULDER]
-                        right_elbow = landmarks[self.mp_holistic.PoseLandmark.RIGHT_ELBOW]
-                        right_wrist = landmarks[self.mp_holistic.PoseLandmark.RIGHT_WRIST]
+                        # 使用新的手势检测逻辑
+                        is_waving, extended_fingers, hand_raised = self.detect_wave_gesture(
+                            landmarks, results.right_hand_landmarks
+                        )
                         
-                        right_angle = self.calculate_arm_angle(right_shoulder, right_elbow, right_wrist)
+                        if is_waving:
+                            waving_ids.add(person_id)
                         
-                        if right_angle is not None:
-                            tracker_data['right_arm_angle_history'].append(right_angle)
-                            
-                            # 检测角度变化（对应原版的detect_dimension_changes）
-                            change_count, changes = self.detect_angle_changes(
-                                tracker_data['right_arm_angle_history'], 
-                                change_threshold=15
-                            )
-                            
-                            # 挥手判定（对应原版的波动检测逻辑）
-                            is_waving = change_count >= self.wave_change_threshold
-                            if is_waving:
-                                waving_ids.add(person_id)
-                            
-                            # 构建检测结果数据
-                            person_info = {
-                                'person_id': person_id,
-                                'height_pixels': height_pixels,
-                                'right_angle': right_angle,
-                                'angle_history_length': len(tracker_data['right_arm_angle_history']),
-                                'change_count': change_count,
-                                'changes': changes,
-                                'is_waving': is_waving,
-                                'center': center,
-                                'landmarks': landmarks
-                            }
-                            detected_persons.append(person_info)
+                        # 构建检测结果数据
+                        person_info = {
+                            'person_id': person_id,
+                            'height_pixels': height_pixels,
+                            'extended_fingers': extended_fingers,
+                            'hand_raised': hand_raised,
+                            'is_waving': is_waving,
+                            'center': center,
+                            'landmarks': landmarks
+                        }
+                        detected_persons.append(person_info)
                             
                     except Exception as e:
                         print(f"  Error processing person {person_id}: {e}")
@@ -266,8 +269,8 @@ class MediaPipeWaveDetector:
                 labels = [
                     f"ID{person_id}: {status} (Teacher)",
                     f"Height:{person_info['height_pixels']:.0f}px",
-                    f"Angle:{person_info['right_angle']:.1f}° Changes:{person_info['change_count']}",
-                    f"History:{person_info['angle_history_length']}"
+                    f"Fingers:{person_info['extended_fingers']}/5 Raised:{person_info['hand_raised']}",
+                    f"Wave: {'YES' if person_info['is_waving'] else 'NO'}"
                 ]
                 
                 # 计算文本背景尺寸
@@ -293,7 +296,7 @@ class MediaPipeWaveDetector:
             f"Frame: {frame_idx}",
             f"Teachers detected: {len(detected_persons)}",
             f"Waving detected: {len(waving_ids)}",
-            f"Filter: Height>{self.teacher_height_threshold}px, AngleChange>15°"
+            f"Filter: Height>{self.teacher_height_threshold}px, HandRaised+4Fingers"
         ]
         
         # 绘制全局信息背景和文本
@@ -340,18 +343,18 @@ def main():
     print(f"=== MediaPipe Holistic Wave Detection Analysis ===")
     print(f"Video file: {video_path}")
     print(f"Video properties: {width}x{height}, {fps:.1f}fps, {total_frames} frames")
-    print(f"Sliding window: {detector.window_len} frames (3 seconds), threshold: {detector.wave_change_threshold}")
-    print(f"Right hand angle change detection: >15° threshold")
+    print(f"Hand gesture detection: Raised hand + 4+ extended fingers")
+    print(f"Teacher height filter: >{detector.teacher_height_threshold} pixels")
     print(f"Analysis started... (press 'q' to quit)")
 
     # 创建输出文件（对应原版的日志文件）
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     
-    # 角度数据日志（替代原版的aspect_ratios日志）
-    angle_log_path = os.path.join(output_dir, f"{name}_arm_angles_{timestamp}.txt")
-    angle_log_file = open(angle_log_path, 'w', encoding='utf-8')
-    angle_log_file.write("# Arm angle data log\n")
-    angle_log_file.write("# Format: frame_id,person_id,right_arm_angle,height_pixels,center_x,center_y\n")
+    # 手势数据日志（替代原版的aspect_ratios日志）
+    gesture_log_path = os.path.join(output_dir, f"{name}_hand_gestures_{timestamp}.txt")
+    gesture_log_file = open(gesture_log_path, 'w', encoding='utf-8')
+    gesture_log_file.write("# Hand gesture data log\n")
+    gesture_log_file.write("# Format: frame_id,person_id,extended_fingers,hand_raised,is_waving,height_pixels,center_x,center_y\n")
     
     # 处理后视频输出（与原版一致）
     output_video_dir = "mediapipe_wave_analysis"
@@ -361,11 +364,11 @@ def main():
     fourcc = cv2.VideoWriter.fourcc(*'mp4v')
     output_video_writer = cv2.VideoWriter(output_video_path, fourcc, fps if fps > 0 else 25, (width, height))
     
-    print(f"Arm angle data will be saved to: {angle_log_path}")
+    print(f"Hand gesture data will be saved to: {gesture_log_path}")
     print(f"Processed video will be saved to: {output_video_path}")
 
     # 主处理循环（与原版结构一致）
-    frame_buffer = deque(maxlen=detector.window_len)
+    frame_buffer = deque(maxlen=75)  # 简化，不再需要detector.window_len
     alarm_active = False
     frame_idx = 0
     no_person_count = 0
@@ -388,15 +391,13 @@ def main():
             for person_info in detected_persons:
                 person_id = person_info['person_id']
                 print(f"  Person {person_id}: Height={person_info['height_pixels']:.0f}px, "
-                      f"Angle={person_info['right_angle']:.1f}°, Changes={person_info['change_count']}")
+                      f"Fingers={person_info['extended_fingers']}/5, Raised={person_info['hand_raised']}")
                 
-                # 显示变化详情
-                if person_info['changes']:
-                    print(f"    Changes: ", end="")
-                    for change_type, frame_pos, prev_val, curr_val, change_magnitude in person_info['changes']:
-                        actual_frame = frame_idx - person_info['angle_history_length'] + frame_pos
-                        print(f"Frame{actual_frame}: {prev_val:.1f}→{curr_val:.1f} (Δ{change_magnitude:.1f}°) ", end="")
-                    print()
+                # 显示手势详情
+                if person_info['hand_raised']:
+                    print(f"    Hand raised above shoulder")
+                if person_info['extended_fingers'] >= 4:
+                    print(f"    {person_info['extended_fingers']} fingers extended")
                 
                 if person_info['is_waving']:
                     print(f"    *** ID{person_id} DETECTED AS WAVING! ***")
@@ -404,9 +405,10 @@ def main():
                 # 记录数据到文件
                 center = person_info['center']
                 if center:
-                    angle_log_file.write(f"{frame_idx},{person_id},{person_info['right_angle']:.2f},"
-                                       f"{person_info['height_pixels']:.0f},{center[0]:.3f},{center[1]:.3f}\n")
-                    angle_log_file.flush()
+                    gesture_log_file.write(f"{frame_idx},{person_id},{person_info['extended_fingers']},"
+                                         f"{person_info['hand_raised']},{person_info['is_waving']},"
+                                         f"{person_info['height_pixels']:.0f},{center[0]:.3f},{center[1]:.3f}\n")
+                    gesture_log_file.flush()
             
             no_person_count = 0
         else:
@@ -444,17 +446,17 @@ def main():
     # 清理资源（与原版一致）
     cap.release()
     output_video_writer.release()
-    angle_log_file.close()
+    gesture_log_file.close()
     cv2.destroyAllWindows()
     
     print(f"\n=== Processing Complete ===")
-    print(f"Arm angle data saved: {angle_log_path}")
+    print(f"Hand gesture data saved: {gesture_log_path}")
     print(f"Processed video saved: {output_video_path}")
     
     # 文件验证（与原版一致）
-    if os.path.exists(angle_log_path):
-        file_size = os.path.getsize(angle_log_path) / 1024  # KB
-        print(f"Arm angle data file size: {file_size:.1f} KB")
+    if os.path.exists(gesture_log_path):
+        file_size = os.path.getsize(gesture_log_path) / 1024  # KB
+        print(f"Hand gesture data file size: {file_size:.1f} KB")
     
     if os.path.exists(output_video_path):
         file_size = os.path.getsize(output_video_path) / (1024*1024)  # MB
