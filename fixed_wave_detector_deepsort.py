@@ -52,6 +52,7 @@ def main():
     wave_change_threshold = int(config.get('wave_change_threshold', 3))
     confidence = float(config.get('confidence', 0.7))
     device = config.get('device', 'cpu')
+    teacher_height_threshold = int(config.get('teacher_height_threshold', 400))
     name = os.path.splitext(os.path.basename(video_path))[0]
 
     # 初始化YOLO
@@ -85,8 +86,8 @@ def main():
     width_history = defaultdict(lambda: deque(maxlen=window_len))
     height_history = defaultdict(lambda: deque(maxlen=window_len))
     
-    # 教师过滤阈值（高度大于400像素的才被认为是教师）
-    TEACHER_HEIGHT_THRESHOLD = 400
+    # 教师过滤阈值（从配置文件读取，默认400像素）
+    TEACHER_HEIGHT_THRESHOLD = teacher_height_threshold
     frame_buffer = deque(maxlen=window_len)
     alarm_active = False
 

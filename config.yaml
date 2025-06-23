@@ -1,5 +1,5 @@
 weights: yolov8n.pt
-input_video: C:\c\wave_hands\test_videos_20250622_100947\B605_3min_20250622_100957.mov
+input_video: C:\c\wave_hands\ss.mov
 output_video: output.mp4
 confidence: 0.3
 wave_change_threshold: 3  # 挥手判定所需宽高比变化次数
@@ -30,6 +30,7 @@ video_decode:
   reconnect_interval: 60  # 定期重连间隔(秒)，5分钟
   max_decode_errors: 50  # 最大解码错误数后强制重连
   error_check_window: 30  # 错误统计窗口(秒)
+teacher_height_threshold: 700  # 教师过滤阈值（高度大于此像素值的才被认为是教师）
 streams:
   - name: B603
     url: rtsp://admin:HuaWei@12345@10.0.14.78:554/LiveMedia/ch1/Media1
