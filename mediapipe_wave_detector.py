@@ -31,8 +31,10 @@ class MediaPipeWaveDetector:
         self.confidence = float(config.get('confidence', 0.7))
         self.device = config.get('device', 'cpu')
         
-        # 滑动窗口长度（与原版一致：75帧 = 3秒）
-        self.window_len = 75
+        # 时间记录参数
+        self.fps = config.get('fps', 25)  # 帧率，用于时间计算
+        self.recording_duration = 3.0  # 录制持续时间（秒）
+        self.alarm_threshold = 2.0     # 报警阈值（秒）
         
         # 人员跟踪数据（替代DeepSORT的功能）
         self.person_trackers = {}
@@ -104,7 +106,11 @@ class MediaPipeWaveDetector:
             self.next_person_id += 1
             self.person_trackers[new_id] = {
                 'last_center': center_pixels,
-                'frame_count': 0
+                'frame_count': 0,
+                'hand_raised_start_frame': None,  # 开始举手的帧号
+                'continuous_raised_frames': 0,    # 连续举手帧数
+                'is_recording': False,            # 是否正在录制
+                'recording_start_frame': None     # 开始录制的帧号
             }
             return new_id
     
@@ -116,58 +122,68 @@ class MediaPipeWaveDetector:
         except:
             return False
     
-    def count_extended_fingers(self, hand_landmarks):
-        """检测张开的手指数量"""
-        if not hand_landmarks:
-            return 0
+    def is_hand_raised_above_wrist(self, right_hand_landmarks, pose_landmarks):
+        """检测举手：所有手指高度高过手腕"""
+        if not right_hand_landmarks or not pose_landmarks:
+            return False
         
         try:
-            landmarks = hand_landmarks.landmark
-            extended_count = 0
-            
-            # 拇指：比较拇指尖和拇指第一关节的X坐标
-            thumb_tip = landmarks[4]  # THUMB_TIP
-            thumb_ip = landmarks[3]   # THUMB_IP
-            if abs(thumb_tip.x - thumb_ip.x) > 0.04:  # 拇指张开的阈值
-                extended_count += 1
-            
-            # 其他四指：比较指尖和指根的Y坐标
-            finger_tips = [8, 12, 16, 20]  # INDEX, MIDDLE, RING, PINKY tips
-            finger_pips = [6, 10, 14, 18]  # INDEX, MIDDLE, RING, PINKY pips
-            
-            for tip_idx, pip_idx in zip(finger_tips, finger_pips):
-                tip = landmarks[tip_idx]
-                pip = landmarks[pip_idx]
-                # 指尖比指节更高（Y坐标更小）表示手指张开
-                if tip.y < pip.y - 0.02:  # 张开阈值
-                    extended_count += 1
-            
-            return extended_count
-        except:
-            return 0
-    
-    def detect_wave_gesture(self, pose_landmarks, right_hand_landmarks):
-        """检测挥手手势：举手 + 张开五指"""
-        if not pose_landmarks:
-            return False, 0, False
-        
-        try:
-            # 获取右肩和右手腕关键点
-            right_shoulder = pose_landmarks[self.mp_holistic.PoseLandmark.RIGHT_SHOULDER]
+            # 获取手腕位置
             right_wrist = pose_landmarks[self.mp_holistic.PoseLandmark.RIGHT_WRIST]
+            wrist_y = right_wrist.y
             
-            # 检测是否举手
-            hand_raised = self.is_hand_raised(right_shoulder, right_wrist)
+            # 获取所有手指尖的位置
+            hand_landmarks = right_hand_landmarks.landmark
+            finger_tips = [
+                hand_landmarks[4],   # 拇指
+                hand_landmarks[8],   # 食指
+                hand_landmarks[12],  # 中指
+                hand_landmarks[16],  # 无名指
+                hand_landmarks[20]   # 小指
+            ]
             
-            # 检测张开的手指数量
-            extended_fingers = self.count_extended_fingers(right_hand_landmarks)
+            # 检查所有手指是否都高于手腕（Y坐标更小）
+            all_fingers_raised = all(tip.y < wrist_y for tip in finger_tips)
             
-            # 挥手判定：举手 + 至少4个手指张开
-            is_waving = hand_raised and extended_fingers >= 4
-            
-            return is_waving, extended_fingers, hand_raised
+            return all_fingers_raised
         except:
-            return False, 0, False
+            return False
+    
+    def update_hand_tracking(self, person_id, hand_raised, current_frame):
+        """更新举手状态跟踪"""
+        tracker_data = self.person_trackers[person_id]
+        
+        if hand_raised:
+            # 如果是刚开始举手
+            if tracker_data['hand_raised_start_frame'] is None:
+                tracker_data['hand_raised_start_frame'] = current_frame
+                tracker_data['continuous_raised_frames'] = 1
+                tracker_data['is_recording'] = True
+                tracker_data['recording_start_frame'] = current_frame
+            else:
+                # 继续举手
+                tracker_data['continuous_raised_frames'] += 1
+        else:
+            # 没有举手，重置状态
+            tracker_data['hand_raised_start_frame'] = None
+            tracker_data['continuous_raised_frames'] = 0
+            
+            # 检查是否应该停止录制
+            if tracker_data['is_recording']:
+                frames_since_recording = current_frame - tracker_data['recording_start_frame']
+                recording_duration = frames_since_recording / self.fps
+                
+                if recording_duration >= self.recording_duration:
+                    tracker_data['is_recording'] = False
+                    tracker_data['recording_start_frame'] = None
+        
+        # 计算连续举手时间
+        continuous_time = tracker_data['continuous_raised_frames'] / self.fps if tracker_data['continuous_raised_frames'] > 0 else 0
+        
+        # 判断是否达到报警条件
+        should_alarm = continuous_time >= self.alarm_threshold
+        
+        return should_alarm, continuous_time, tracker_data['is_recording']
     
     def process_frame(self, frame, frame_idx):
         """处理单帧（主要检测逻辑，对应原版main函数的核心部分）"""
@@ -196,23 +212,31 @@ class MediaPipeWaveDetector:
                     tracker_data = self.person_trackers[person_id]
                     tracker_data['frame_count'] += 1
                     
-                    # 检测右手挥手手势（举手 + 张开五指）
+                    # 检测举手手势（所有手指高过手腕）
                     try:
-                        # 使用新的手势检测逻辑
-                        is_waving, extended_fingers, hand_raised = self.detect_wave_gesture(
-                            landmarks, results.right_hand_landmarks
+                        # 使用新的简化检测逻辑
+                        hand_raised = self.is_hand_raised_above_wrist(
+                            results.right_hand_landmarks, landmarks
                         )
                         
-                        if is_waving:
+                        # 更新举手状态跟踪
+                        should_alarm, continuous_time, is_recording = self.update_hand_tracking(
+                            person_id, hand_raised, frame_idx
+                        )
+                        
+                        # 举手即显示为挥手
+                        if hand_raised:
                             waving_ids.add(person_id)
                         
                         # 构建检测结果数据
                         person_info = {
                             'person_id': person_id,
                             'height_pixels': height_pixels,
-                            'extended_fingers': extended_fingers,
                             'hand_raised': hand_raised,
-                            'is_waving': is_waving,
+                            'continuous_time': continuous_time,
+                            'is_recording': is_recording,
+                            'should_alarm': should_alarm,
+                            'is_waving': hand_raised,  # 举手即为挥手
                             'center': center,
                             'landmarks': landmarks
                         }
@@ -269,8 +293,8 @@ class MediaPipeWaveDetector:
                 labels = [
                     f"ID{person_id}: {status} (Teacher)",
                     f"Height:{person_info['height_pixels']:.0f}px",
-                    f"Fingers:{person_info['extended_fingers']}/5 Raised:{person_info['hand_raised']}",
-                    f"Wave: {'YES' if person_info['is_waving'] else 'NO'}"
+                    f"Raised:{person_info['hand_raised']} Time:{person_info['continuous_time']:.1f}s",
+                    f"Recording:{person_info['is_recording']} Alarm:{person_info['should_alarm']}"
                 ]
                 
                 # 计算文本背景尺寸
@@ -295,8 +319,8 @@ class MediaPipeWaveDetector:
         info_lines = [
             f"Frame: {frame_idx}",
             f"Teachers detected: {len(detected_persons)}",
-            f"Waving detected: {len(waving_ids)}",
-            f"Filter: Height>{self.teacher_height_threshold}px, HandRaised+4Fingers"
+            f"Hand raised: {len(waving_ids)}",
+            f"Filter: Height>{self.teacher_height_threshold}px, AllFingersAboveWrist"
         ]
         
         # 绘制全局信息背景和文本
@@ -340,10 +364,14 @@ def main():
     height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+    # 设置检测器的实际帧率
+    detector.fps = fps if fps > 0 else 25
+
     print(f"=== MediaPipe Holistic Wave Detection Analysis ===")
     print(f"Video file: {video_path}")
     print(f"Video properties: {width}x{height}, {fps:.1f}fps, {total_frames} frames")
-    print(f"Hand gesture detection: Raised hand + 4+ extended fingers")
+    print(f"Hand gesture detection: All fingers above wrist")
+    print(f"Recording: 3s duration, alarm threshold: 2s continuous")
     print(f"Teacher height filter: >{detector.teacher_height_threshold} pixels")
     print(f"Analysis started... (press 'q' to quit)")
 
@@ -354,7 +382,7 @@ def main():
     gesture_log_path = os.path.join(output_dir, f"{name}_hand_gestures_{timestamp}.txt")
     gesture_log_file = open(gesture_log_path, 'w', encoding='utf-8')
     gesture_log_file.write("# Hand gesture data log\n")
-    gesture_log_file.write("# Format: frame_id,person_id,extended_fingers,hand_raised,is_waving,height_pixels,center_x,center_y\n")
+    gesture_log_file.write("# Format: frame_id,person_id,hand_raised,continuous_time,is_recording,should_alarm,height_pixels,center_x,center_y\n")
     
     # 处理后视频输出（与原版一致）
     output_video_dir = "mediapipe_wave_analysis"
@@ -391,23 +419,26 @@ def main():
             for person_info in detected_persons:
                 person_id = person_info['person_id']
                 print(f"  Person {person_id}: Height={person_info['height_pixels']:.0f}px, "
-                      f"Fingers={person_info['extended_fingers']}/5, Raised={person_info['hand_raised']}")
+                      f"Raised={person_info['hand_raised']}, Time={person_info['continuous_time']:.1f}s")
                 
-                # 显示手势详情
+                # 显示状态详情
                 if person_info['hand_raised']:
-                    print(f"    Hand raised above shoulder")
-                if person_info['extended_fingers'] >= 4:
-                    print(f"    {person_info['extended_fingers']} fingers extended")
+                    print(f"    All fingers above wrist")
+                if person_info['is_recording']:
+                    print(f"    Recording in progress...")
+                if person_info['should_alarm']:
+                    print(f"    *** ID{person_id} ALARM TRIGGERED! (>{detector.alarm_threshold}s) ***")
                 
                 if person_info['is_waving']:
-                    print(f"    *** ID{person_id} DETECTED AS WAVING! ***")
+                    print(f"    *** ID{person_id} HAND RAISED! ***")
                 
                 # 记录数据到文件
                 center = person_info['center']
                 if center:
-                    gesture_log_file.write(f"{frame_idx},{person_id},{person_info['extended_fingers']},"
-                                         f"{person_info['hand_raised']},{person_info['is_waving']},"
-                                         f"{person_info['height_pixels']:.0f},{center[0]:.3f},{center[1]:.3f}\n")
+                    gesture_log_file.write(f"{frame_idx},{person_id},{person_info['hand_raised']},"
+                                         f"{person_info['continuous_time']:.2f},{person_info['is_recording']},"
+                                         f"{person_info['should_alarm']},{person_info['height_pixels']:.0f},"
+                                         f"{center[0]:.3f},{center[1]:.3f}\n")
                     gesture_log_file.flush()
             
             no_person_count = 0
@@ -420,17 +451,19 @@ def main():
         # 保存处理后的视频帧
         output_video_writer.write(processed_frame)
 
-        # 报警机制（与原版完全一致）
-        if waving_ids and not alarm_active:
+        # 报警机制（基于连续举手时间）
+        alarm_triggered = any(person_info.get('should_alarm', False) for person_info in detected_persons)
+        
+        if alarm_triggered and not alarm_active:
             alarm_timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             alarm_path = os.path.join(output_dir, f"{name}_{alarm_timestamp}.mp4")
             alarm_writer = cv2.VideoWriter(alarm_path, fourcc, fps if fps > 0 else 25, (width, height))
             for f in frame_buffer:
                 alarm_writer.write(f)
             alarm_writer.release()
-            print(f"!!! WAVING DETECTED, alarm segment saved: {alarm_path}")
+            print(f"!!! CONTINUOUS HAND RAISING DETECTED (>2s), alarm segment saved: {alarm_path}")
             alarm_active = True
-        if not waving_ids:
+        elif not alarm_triggered:
             alarm_active = False
 
         # 进度显示（与原版一致）
