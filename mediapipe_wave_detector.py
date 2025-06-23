@@ -286,22 +286,24 @@ class MediaPipeWaveDetector:
         # 绘制人员检测信息（对应原版的边界框和标签）
         for person_info in detected_persons:
             person_id = person_info['person_id']
-            center = person_info['center']
+            landmarks = person_info['landmarks']
             is_waving = person_info['is_waving']
             
-            if center:
-                display_x = int(center[0] * width)
-                display_y = int(center[1] * height)
+            if landmarks:
+                # 获取鼻子位置作为显示点（覆盖脸部）
+                nose = landmarks[self.mp_holistic.PoseLandmark.NOSE]
+                display_x = int(nose.x * width)
+                display_y = int(nose.y * height)
                 
                 # 状态颜色（绿色=挥手，红色=正常）
                 color = (0, 255, 0) if is_waving else (255, 0, 0)
                 status = "WAVING" if is_waving else "NORMAL"
                 
-                # 绘制人员中心标记
-                cv2.circle(frame, (display_x, display_y), 15, color, -1)
-                cv2.circle(frame, (display_x, display_y), 18, (255, 255, 255), 2)
+                # 绘制鼻子位置标记（小一点，不要太突兀）
+                cv2.circle(frame, (display_x, display_y), 8, color, -1)
+                cv2.circle(frame, (display_x, display_y), 10, (255, 255, 255), 2)
                 
-                # 显示详细信息（对应原版的标签格式）
+                # 显示详细信息（直接覆盖脸部区域）
                 font = cv2.FONT_HERSHEY_SIMPLEX
                 font_scale = 0.6
                 thickness = 2
@@ -323,17 +325,26 @@ class MediaPipeWaveDetector:
                     (text_width, text_height), _ = cv2.getTextSize(label, font, font_scale, thickness)
                     max_width = max(max_width, text_width)
                 
-                # 绘制白色文本背景
+                # 以鼻子为中心，向上偏移显示信息框（覆盖脸部上半部分）
                 bg_height = len(labels) * 25 + 10
-                cv2.rectangle(frame, (display_x-5, display_y-bg_height-30), 
-                             (display_x+max_width+10, display_y+5), (255, 255, 255), -1)
-                cv2.rectangle(frame, (display_x-5, display_y-bg_height-30), 
-                             (display_x+max_width+10, display_y+5), (0, 0, 0), 1)
+                start_x = display_x - max_width // 2 - 5
+                start_y = display_y - bg_height - 10
+                end_x = display_x + max_width // 2 + 5
+                end_y = display_y + 20
                 
-                # 绘制黑色文本
+                # 绘制半透明白色背景（覆盖脸部）
+                overlay = frame.copy()
+                cv2.rectangle(overlay, (start_x, start_y), (end_x, end_y), (255, 255, 255), -1)
+                cv2.rectangle(overlay, (start_x, start_y), (end_x, end_y), (0, 0, 0), 2)
+                # 混合透明度，让背景稍微透明一点
+                cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+                
+                # 绘制黑色文本（居中显示）
                 for i, label in enumerate(labels):
-                    y_pos = display_y - bg_height + i * 20
-                    cv2.putText(frame, label, (display_x, y_pos), font, font_scale, (0, 0, 0), thickness)
+                    (text_width, text_height), _ = cv2.getTextSize(label, font, font_scale, thickness)
+                    text_x = display_x - text_width // 2
+                    text_y = start_y + 25 + i * 20
+                    cv2.putText(frame, label, (text_x, text_y), font, font_scale, (0, 0, 0), thickness)
         
         # 全局信息显示（对应原版的统计信息）
         info_lines = [
