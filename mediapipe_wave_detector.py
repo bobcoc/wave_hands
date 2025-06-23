@@ -162,6 +162,7 @@ class MediaPipeWaveDetector:
             self.person_trackers[new_id] = {
                 'last_center': center_pixels,
                 'frame_count': 0,
+                'max_height': 0,                  # 记录最大身高（用于判断是否为最高的人）
                 'hand_raised_start_frame': None,  # 开始举手的帧号
                 'continuous_raised_frames': 0,    # 连续举手帧数
                 'not_raised_frames': 0,           # 连续未举手帧数
@@ -257,7 +258,7 @@ class MediaPipeWaveDetector:
         return should_alarm, continuous_time, tracker_data['is_recording']
     
     def process_frame(self, frame, frame_idx):
-        """处理单帧（主要检测逻辑，对应原版main函数的核心部分）"""
+        """处理单帧（主要检测逻辑，选择最高的人作为老师）"""
         frame_disp = frame.copy()
         height, width = frame.shape[:2]
         
@@ -268,6 +269,7 @@ class MediaPipeWaveDetector:
         detected_persons = []
         waving_ids = set()
         
+        # MediaPipe只能检测一个人，所以我们改为：先检测，再判断是否为最高的老师
         if results.pose_landmarks:
             landmarks = results.pose_landmarks.landmark
             
@@ -278,50 +280,64 @@ class MediaPipeWaveDetector:
             # 站立检测（区分老师和学生）
             is_standing, standing_info = self.is_person_standing(landmarks)
             
-            # 教师过滤：身高 + 站立状态（对应原版的TEACHER_HEIGHT_THRESHOLD检查）
+            # 基础过滤：身高 + 站立状态
             if height_pixels >= self.teacher_height_threshold and is_standing:
-                person_id = self.get_or_assign_person_id(center, width, height)
+                # 检查是否为当前帧中最高的人（通过历史数据比较）
+                current_max_height = max([tracker.get('max_height', 0) for tracker in self.person_trackers.values()] + [0])
                 
-                if person_id is not None:
-                    tracker_data = self.person_trackers[person_id]
-                    tracker_data['frame_count'] += 1
+                # 如果当前检测到的人比历史最高还高，或者差距不大（可能是同一个人），则认为是老师
+                is_tallest = (height_pixels >= current_max_height * 0.9)  # 允许10%的检测误差
+                
+                if is_tallest:
+                    print(f"  Detected tallest person: {height_pixels:.0f}px (previous max: {current_max_height:.0f}px)")
                     
-                    # 检测举手手势（所有手指高过手腕）
-                    try:
-                        # 使用新的简化检测逻辑
-                        hand_raised = self.is_hand_raised_above_wrist(
-                            results.right_hand_landmarks, landmarks
-                        )
+                    # 为最高的人分配ID并进行手势检测
+                    person_id = self.get_or_assign_person_id(center, width, height)
+            
+                    if person_id is not None:
+                        tracker_data = self.person_trackers[person_id]
+                        tracker_data['frame_count'] += 1
+                        tracker_data['max_height'] = max(tracker_data.get('max_height', 0), height_pixels)  # 记录最大身高
                         
-                        # 更新举手状态跟踪
-                        should_alarm, continuous_time, is_recording = self.update_hand_tracking(
-                            person_id, hand_raised, frame_idx
-                        )
-                        
-                        # 举手即显示为挥手
-                        if hand_raised:
-                            waving_ids.add(person_id)
-                        
-                        # 构建检测结果数据
-                        person_info = {
-                            'person_id': person_id,
-                            'height_pixels': height_pixels,
-                            'hand_raised': hand_raised,
-                            'continuous_time': continuous_time,
-                            'is_recording': is_recording,
-                            'should_alarm': should_alarm,
-                            'is_waving': hand_raised,  # 举手即为挥手
-                            'center': center,
-                            'landmarks': landmarks,
-                            'is_standing': is_standing,
-                            'standing_info': standing_info
-                        }
-                        detected_persons.append(person_info)
+                        # 检测举手手势（所有手指高过手腕）
+                        try:
+                            # 使用新的简化检测逻辑
+                            hand_raised = self.is_hand_raised_above_wrist(
+                                results.right_hand_landmarks, 
+                                landmarks
+                            )
                             
-                    except Exception as e:
-                        print(f"  Error processing person {person_id}: {e}")
+                            # 更新举手状态跟踪
+                            should_alarm, continuous_time, is_recording = self.update_hand_tracking(
+                                person_id, hand_raised, frame_idx
+                            )
+                            
+                            # 举手即显示为挥手
+                            if hand_raised:
+                                waving_ids.add(person_id)
+                            
+                            # 构建检测结果数据
+                            person_info = {
+                                'person_id': person_id,
+                                'height_pixels': height_pixels,
+                                'hand_raised': hand_raised,
+                                'continuous_time': continuous_time,
+                                'is_recording': is_recording,
+                                'should_alarm': should_alarm,
+                                'is_waving': hand_raised,  # 举手即为挥手
+                                'center': center,
+                                'landmarks': landmarks,
+                                'is_standing': is_standing,
+                                'standing_info': standing_info
+                            }
+                            detected_persons.append(person_info)
+                                
+                        except Exception as e:
+                            print(f"  Error processing tallest person {person_id}: {e}")
+                else:
+                    print(f"  Filtered out shorter person: {height_pixels:.0f}px (not tallest)")
         
-        # 绘制检测结果
+        # 绘制检测结果（只绘制最高的人）
         self.draw_detection_results(frame_disp, results, detected_persons, waving_ids, frame_idx, width, height)
         
         return frame_disp, detected_persons, waving_ids
@@ -415,7 +431,7 @@ class MediaPipeWaveDetector:
             f"Frame: {frame_idx}",
             f"Teachers detected: {len(detected_persons)}",
             f"Hand raised: {len(waving_ids)}",
-            f"Filter: Height>{self.teacher_height_threshold}px, Standing=True, AllFingersAboveWrist"
+            f"Filter: Tallest+Standing+Height>{self.teacher_height_threshold}px"
         ]
         
         # 绘制全局信息背景和文本
@@ -467,7 +483,8 @@ def main():
     print(f"Video properties: {width}x{height}, {fps:.1f}fps, {total_frames} frames")
     print(f"Hand gesture detection: All fingers above wrist")
     print(f"Recording: 3s duration, alarm threshold: 2s continuous")
-    print(f"Teacher filters: Height>{detector.teacher_height_threshold}px + Standing posture")
+    print(f"Teacher filters: Height>{detector.teacher_height_threshold}px + Standing + Tallest person")
+    print(f"Selection strategy: Choose the tallest standing person as teacher")
     print(f"Standing detection: Leg ratio>0.35, Knee pos 0.3-0.7, Upper body 0.4-0.7")
     print(f"Analysis started... (press 'q' to quit)")
 
