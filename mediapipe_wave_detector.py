@@ -26,7 +26,7 @@ class MediaPipeWaveDetector:
         self.mp_draw = mp.solutions.drawing_utils
         
         # 从配置读取参数（与原版保持一致）
-        self.teacher_height_threshold = int(config.get('teacher_height_threshold', 400))
+        self.teacher_height_threshold = int(config.get('teacher_height_threshold', 600))
         self.wave_change_threshold = int(config.get('wave_change_threshold', 3))
         self.confidence = float(config.get('confidence', 0.7))
         self.device = config.get('device', 'cpu')
@@ -59,6 +59,61 @@ class MediaPipeWaveDetector:
             return height_pixels
         except:
             return 0.0
+    
+    def is_person_standing(self, landmarks):
+        """检测人员是否站立（用于区分老师和学生）"""
+        try:
+            # 获取关键身体部位
+            nose = landmarks[self.mp_holistic.PoseLandmark.NOSE]
+            left_hip = landmarks[self.mp_holistic.PoseLandmark.LEFT_HIP]
+            right_hip = landmarks[self.mp_holistic.PoseLandmark.RIGHT_HIP]
+            left_knee = landmarks[self.mp_holistic.PoseLandmark.LEFT_KNEE]
+            right_knee = landmarks[self.mp_holistic.PoseLandmark.RIGHT_KNEE]
+            left_ankle = landmarks[self.mp_holistic.PoseLandmark.LEFT_ANKLE]
+            right_ankle = landmarks[self.mp_holistic.PoseLandmark.RIGHT_ANKLE]
+            
+            # 计算髋部中心
+            hip_center_y = (left_hip.y + right_hip.y) / 2
+            
+            # 计算膝盖中心
+            knee_center_y = (left_knee.y + right_knee.y) / 2
+            
+            # 计算脚踝中心
+            ankle_center_y = (left_ankle.y + right_ankle.y) / 2
+            
+            # 站立的特征判断：
+            # 1. 髋部到脚踝的距离应该较大（腿部伸直）
+            hip_to_ankle_ratio = abs(ankle_center_y - hip_center_y)
+            
+            # 2. 膝盖应该在髋部和脚踝之间的合理位置（不是蜷缩状态）
+            knee_position_ratio = abs(knee_center_y - hip_center_y) / abs(ankle_center_y - hip_center_y) if abs(ankle_center_y - hip_center_y) > 0 else 0
+            
+            # 3. 整体身体应该相对垂直（鼻子到髋部，髋部到脚踝基本垂直）
+            nose_to_hip_ratio = abs(nose.y - hip_center_y)
+            total_height_ratio = abs(ankle_center_y - nose.y)
+            
+            # 站立判断条件：
+            # - 髋部到脚踝距离占总身高比例应该大于0.35（腿部展开）
+            # - 膝盖位置应该在髋部到脚踝的0.3-0.7之间（正常站立姿态）
+            # - 上半身（鼻子到髋部）占总身高比例应该在0.4-0.7之间（正常比例）
+            
+            leg_ratio = hip_to_ankle_ratio / total_height_ratio if total_height_ratio > 0 else 0
+            upper_body_ratio = nose_to_hip_ratio / total_height_ratio if total_height_ratio > 0 else 0
+            
+            is_standing = (
+                leg_ratio > 0.35 and  # 腿部展开度
+                0.3 < knee_position_ratio < 0.7 and  # 膝盖位置正常
+                0.4 < upper_body_ratio < 0.7  # 上半身比例正常
+            )
+            
+            return is_standing, {
+                'leg_ratio': leg_ratio,
+                'knee_position_ratio': knee_position_ratio,
+                'upper_body_ratio': upper_body_ratio
+            }
+            
+        except Exception as e:
+            return False, {'error': str(e)}
     
     def calculate_person_center(self, landmarks):
         """计算人体中心点（用于人员追踪，替代DeepSORT的ID分配）"""
@@ -220,8 +275,11 @@ class MediaPipeWaveDetector:
             height_pixels = self.calculate_person_height_pixels(landmarks, height)
             center = self.calculate_person_center(landmarks)
             
-            # 教师过滤（对应原版的TEACHER_HEIGHT_THRESHOLD检查）
-            if height_pixels >= self.teacher_height_threshold:
+            # 站立检测（区分老师和学生）
+            is_standing, standing_info = self.is_person_standing(landmarks)
+            
+            # 教师过滤：身高 + 站立状态（对应原版的TEACHER_HEIGHT_THRESHOLD检查）
+            if height_pixels >= self.teacher_height_threshold and is_standing:
                 person_id = self.get_or_assign_person_id(center, width, height)
                 
                 if person_id is not None:
@@ -254,7 +312,9 @@ class MediaPipeWaveDetector:
                             'should_alarm': should_alarm,
                             'is_waving': hand_raised,  # 举手即为挥手
                             'center': center,
-                            'landmarks': landmarks
+                            'landmarks': landmarks,
+                            'is_standing': is_standing,
+                            'standing_info': standing_info
                         }
                         detected_persons.append(person_info)
                             
@@ -312,9 +372,13 @@ class MediaPipeWaveDetector:
                 tracker_data = self.person_trackers.get(person_id, {})
                 not_raised_time = tracker_data.get('not_raised_frames', 0) / self.fps
                 
+                # 获取站立状态信息
+                standing_info = person_info.get('standing_info', {})
+                leg_ratio = standing_info.get('leg_ratio', 0)
+                
                 labels = [
-                    f"ID{person_id}: {status} (Teacher)",
-                    f"Height:{person_info['height_pixels']:.0f}px",
+                    f"ID{person_id}: {status} (Teacher-Standing)",
+                    f"Height:{person_info['height_pixels']:.0f}px LegRatio:{leg_ratio:.2f}",
                     f"Raised:{person_info['hand_raised']} Total:{person_info['continuous_time']:.1f}s",
                     f"Down:{not_raised_time:.1f}s Alarm:{person_info['should_alarm']}"
                 ]
@@ -351,7 +415,7 @@ class MediaPipeWaveDetector:
             f"Frame: {frame_idx}",
             f"Teachers detected: {len(detected_persons)}",
             f"Hand raised: {len(waving_ids)}",
-            f"Filter: Height>{self.teacher_height_threshold}px, AllFingersAboveWrist"
+            f"Filter: Height>{self.teacher_height_threshold}px, Standing=True, AllFingersAboveWrist"
         ]
         
         # 绘制全局信息背景和文本
@@ -403,7 +467,8 @@ def main():
     print(f"Video properties: {width}x{height}, {fps:.1f}fps, {total_frames} frames")
     print(f"Hand gesture detection: All fingers above wrist")
     print(f"Recording: 3s duration, alarm threshold: 2s continuous")
-    print(f"Teacher height filter: >{detector.teacher_height_threshold} pixels")
+    print(f"Teacher filters: Height>{detector.teacher_height_threshold}px + Standing posture")
+    print(f"Standing detection: Leg ratio>0.35, Knee pos 0.3-0.7, Upper body 0.4-0.7")
     print(f"Analysis started... (press 'q' to quit)")
 
     # 创建输出文件（对应原版的日志文件）
@@ -449,8 +514,15 @@ def main():
         if detected_persons:
             for person_info in detected_persons:
                 person_id = person_info['person_id']
-                print(f"  Person {person_id}: Height={person_info['height_pixels']:.0f}px, "
+                # 获取站立信息
+                standing_info = person_info.get('standing_info', {})
+                leg_ratio = standing_info.get('leg_ratio', 0)
+                knee_ratio = standing_info.get('knee_position_ratio', 0)
+                upper_ratio = standing_info.get('upper_body_ratio', 0)
+                
+                print(f"  Person {person_id}: Height={person_info['height_pixels']:.0f}px, Standing=True, "
                       f"Raised={person_info['hand_raised']}, Time={person_info['continuous_time']:.1f}s")
+                print(f"    Standing ratios: Leg={leg_ratio:.2f}, Knee={knee_ratio:.2f}, Upper={upper_ratio:.2f}")
                 
                 # 显示状态详情
                 if person_info['hand_raised']:

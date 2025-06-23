@@ -52,7 +52,7 @@ def main():
     wave_change_threshold = int(config.get('wave_change_threshold', 3))
     confidence = float(config.get('confidence', 0.7))
     device = config.get('device', 'cpu')
-    teacher_height_threshold = int(config.get('teacher_height_threshold', 400))
+    teacher_height_threshold = int(config.get('teacher_height_threshold', 600))
     name = os.path.splitext(os.path.basename(video_path))[0]
 
     # 初始化YOLO
