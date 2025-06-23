@@ -1,0 +1,5 @@
+# MediaPipe Holistic 挥手检测程序依赖
+mediapipe>=0.10.0
+opencv-python>=4.8.0
+numpy>=1.21.0
+PyYAML>=6.0 
