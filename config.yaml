@@ -31,6 +31,11 @@ video_decode:
   max_decode_errors: 50  # 最大解码错误数后强制重连
   error_check_window: 30  # 错误统计窗口(秒)
 teacher_height_threshold: 700  # 教师过滤阈值（高度大于此像素值的才被认为是教师）
+
+# MediaPipe性能优化设置
+skip_frames: 1          # 跳帧处理：1=处理每帧，2=跳过1帧，3=跳过2帧
+resize_input: false     # 是否缩放输入图像以提高性能
+target_resolution: [640, 480]  # 目标分辨率（当resize_input=true时使用）
 streams:
   - name: B603
     url: rtsp://admin:HuaWei@12345@10.0.14.78:554/LiveMedia/ch1/Media1

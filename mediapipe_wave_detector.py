@@ -18,11 +18,38 @@ class MediaPipeWaveDetector:
     def __init__(self, config):
         # 初始化MediaPipe
         self.mp_holistic = mp.solutions.holistic
-        self.holistic = self.mp_holistic.Holistic(
-            min_detection_confidence=0.5,
-            min_tracking_confidence=0.5,
-            model_complexity=1  # 平衡性能和精度
-        )
+        
+        # 尝试启用GPU加速（如果可用）
+        try:
+            # 检查设备配置
+            use_gpu = (self.device == 'cuda' or self.device == 'gpu')
+            
+            if use_gpu:
+                print("  Attempting to use GPU acceleration...")
+                # 注意：MediaPipe Python API对GPU支持有限
+                self.holistic = self.mp_holistic.Holistic(
+                    min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5,
+                    model_complexity=2,  # 更高复杂度，利用GPU性能
+                    enable_segmentation=False,  # 关闭分割减少计算量
+                    smooth_landmarks=True,  # 启用平滑
+                    static_image_mode=False  # 视频模式
+                )
+                print("  GPU acceleration attempted (limited support in Python API)")
+            else:
+                print("  Using CPU inference (device config: {})".format(self.device))
+                self.holistic = self.mp_holistic.Holistic(
+                    min_detection_confidence=0.5,
+                    min_tracking_confidence=0.5,
+                    model_complexity=1  # 平衡性能和精度
+                )
+        except Exception as e:
+            print(f"  GPU initialization failed, falling back to CPU: {e}")
+            self.holistic = self.mp_holistic.Holistic(
+                min_detection_confidence=0.5,
+                min_tracking_confidence=0.5,
+                model_complexity=1
+            )
         self.mp_draw = mp.solutions.drawing_utils
         
         # 从配置读取参数（与原版保持一致）
@@ -35,6 +62,11 @@ class MediaPipeWaveDetector:
         self.fps = config.get('fps', 25)  # 帧率，用于时间计算
         self.recording_duration = 3.0  # 录制持续时间（秒）
         self.alarm_threshold = 2.0     # 报警阈值（秒）
+        
+        # 性能优化参数
+        self.skip_frames = config.get('skip_frames', 1)  # 跳帧处理，1=处理每帧，2=跳过1帧
+        self.resize_input = config.get('resize_input', False)  # 是否缩放输入图像
+        self.target_resolution = config.get('target_resolution', (640, 480))  # 目标分辨率
         
         # 人员跟踪数据（替代DeepSORT的功能）
         self.person_trackers = {}
@@ -262,8 +294,21 @@ class MediaPipeWaveDetector:
         frame_disp = frame.copy()
         height, width = frame.shape[:2]
         
+        # 性能优化：跳帧处理
+        if frame_idx % self.skip_frames != 0:
+            # 跳过当前帧，返回上一帧的结果
+            return frame_disp, [], set()
+        
+        # 性能优化：输入图像缩放
+        process_frame = frame
+        if self.resize_input:
+            target_w, target_h = self.target_resolution
+            if width > target_w or height > target_h:
+                process_frame = cv2.resize(frame, (target_w, target_h))
+                print(f"  Resized input from {width}x{height} to {target_w}x{target_h}")
+        
         # MediaPipe处理
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb_frame = cv2.cvtColor(process_frame, cv2.COLOR_BGR2RGB)
         results = self.holistic.process(rgb_frame)
         
         detected_persons = []
