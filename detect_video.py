@@ -6,6 +6,8 @@ import sys
 import time
 from collections import deque
 from multiprocessing import Process
+import multiprocessing
+from alarm_video_popup import show_alarm_video_popup
 
 # 读取配置文件
 def load_config(config_path='config.yaml'):
@@ -303,7 +305,7 @@ def worker(stream_cfg, config):
                         alarm_writer.write(f)
                     alarm_writer.release()
                     print(f"[{name}] !!! 触发报警：3秒内palm帧数{palm_frame_count}>=30，报警片段: {alarm_path}")
-                    play_video_window(alarm_path, window_name=f'ALARM-{name}', wait=30)
+                    multiprocessing.Process(target=show_alarm_video_popup, args=(alarm_path, f'ALARM-{name}')).start()
                     state = 'cooldown'
                     cooldown_until = time.time() + cooldown_seconds
                 else:
