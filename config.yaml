@@ -1,14 +1,13 @@
-weights: yolov8n.pt
+weights: weight/best.pt
 input_video: C:\c\wave_hands\ss.mov
 output_video: output.mp4
-confidence: 0.3
-wave_change_threshold: 3  # 挥手判定所需宽高比变化次数
+confidence: 0.2
 names: ['wave', 'nowave']
 device: cuda
 alarm_dir: alarms
 alarm_classes: [0, 1]  # 0: wave, 1: nowave
 alarm_duration: 3  # 秒
-detect_interval_ms: 1000  # 检测间隔，单位ms
+idle_detect_interval: 10  # 空闲检测间隔，单位帧
 cooldown_seconds: 60  # 报警冷却时长，单位秒
 # 错误处理设置
 skip_frame_on_error: true  # 错误时跳过帧
@@ -32,10 +31,6 @@ video_decode:
   error_check_window: 30  # 错误统计窗口(秒)
 teacher_height_threshold: 700  # 教师过滤阈值（高度大于此像素值的才被认为是教师）
 
-# MediaPipe性能优化设置
-skip_frames: 1          # 跳帧处理：1=处理每帧，2=跳过1帧，3=跳过2帧
-resize_input: false     # 是否缩放输入图像以提高性能
-target_resolution: [640, 480]  # 目标分辨率（当resize_input=true时使用）
 streams:
   - name: B603
     url: rtsp://admin:HuaWei@12345@10.0.14.78:554/LiveMedia/ch1/Media1

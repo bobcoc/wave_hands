@@ -111,16 +111,11 @@ def worker(stream_cfg, config):
     url = stream_cfg.get('url')
     weights = config.get('weights', 'weight/best.pt')
     confidence = float(config.get('confidence', 0.5))
-    names = config.get('names', ['wave', 'nowave'])
     device = config.get('device', 'cpu')
     alarm_dir = config.get('alarm_dir', 'alarms')
-    alarm_classes = config.get('alarm_classes', [0, 1])
     alarm_duration = int(config.get('alarm_duration', 3))
-    detect_interval_ms = int(config.get('detect_interval_ms', 500))
     cooldown_seconds = int(config.get('cooldown_seconds', 60))
-    skip_frame_on_error = config.get('skip_frame_on_error', True)
-    error_recovery_delay = config.get('error_recovery_delay', 1)
-    max_error_count = config.get('max_error_count', 3)
+    idle_detect_interval = int(config.get('idle_detect_interval', 5))  # 新增，idle下每N帧检测一次
 
     if not os.path.exists(alarm_dir):
         os.makedirs(alarm_dir)
@@ -128,92 +123,51 @@ def worker(stream_cfg, config):
     model = YOLO(weights, task='detect')
     model.to(device)
 
-    color_map = [(0,255,0), (0,0,255), (255,0,0), (255,255,0), (0,255,255)]
+    color_box = (0, 255, 0)
+    color_kpt = (0, 255, 255)
+    color_line = (255, 255, 255)
     state = 'idle'  # idle, active, cooldown
     cooldown_until = 0
-    frame_buffer = None
-    alarm_flags = None
-    wave_counts = None
-    nowave_counts = None
-    alarm_buf_len = None
     fourcc = cv2.VideoWriter.fourcc(*'mp4v')
     print(f"[{name}] 进程启动，流地址: {url}")
-    
-    # 显示视频解码配置
-    video_decode_config = config.get('video_decode', {})
-    if video_decode_config.get('use_hardware_decode', False):
-        print(f"[{name}] 硬件解码已启用，后端: {video_decode_config.get('decode_backend', 'ffmpeg')}")
-    else:
-        print(f"[{name}] 使用软件解码")
-    
-    error_count = 0
-    last_successful_frame_time = time.time()
-    
-    # 自动重连配置
-    auto_reconnect = video_decode_config.get('auto_reconnect', True)
-    reconnect_interval = video_decode_config.get('reconnect_interval', 120)
-    max_decode_errors = video_decode_config.get('max_decode_errors', 50)
-    error_check_window = video_decode_config.get('error_check_window', 30)
-    
+
+    cap = None
+    force_reconnect = False
+    idle_frame_counter = 0
+    alarm_buf_len = 75  # 3秒*25帧，后续可根据fps动态调整
+    mediapipe_connections = [  # MediaPipe手部骨架连线
+        (0,1),(1,2),(2,3),(3,4),    # 大拇指
+        (0,5),(5,6),(6,7),(7,8),    # 食指
+        (0,9),(9,10),(10,11),(11,12), # 中指
+        (0,13),(13,14),(14,15),(15,16), # 无名指
+        (0,17),(17,18),(18,19),(19,20)  # 小指
+    ]
+    # 新增：定时重连相关变量
+    reconnect_interval = int(config.get('reconnect_interval', 120))  # 秒
     last_reconnect_time = time.time()
-    decode_error_count = 0
-    last_error_reset_time = time.time()
-    last_state_log_time = time.time()  # 上次状态日志时间
-    
-    if auto_reconnect:
-        print(f"[{name}] 自动重连已启用，间隔: {reconnect_interval}秒")
-    
-    print(f"[{name}] 检测间隔设置: {detect_interval_ms}ms")
-    print(f"[{name}] 初始状态: {state}")
-    
-    cap = None  # 初始化cap变量
-    force_reconnect = False  # 强制重连标志
-    
-    # 合并为单一循环，同时处理重连和检测逻辑
+    # 新增：全局帧计数
+    global_frame_counter = 0
+
     while True:
-        # 记录循环开始时间（用于计算总检测周期）
-        cycle_start_time = time.time()
-        
-        # 1. 状态日志 - 每30秒输出一次当前状态
-        if (cycle_start_time - last_state_log_time) >= 30:
-            print(f"[{name}] 当前状态: {state}, 解码错误计数: {decode_error_count}")
-            last_state_log_time = cycle_start_time
-        
-        # 2. 检查是否需要定期重连
-        if auto_reconnect and (cycle_start_time - last_reconnect_time) >= reconnect_interval:
+        # 定时重连逻辑
+        if time.time() - last_reconnect_time >= reconnect_interval:
             print(f"[{name}] 定期重连：已运行{reconnect_interval}秒，主动重新连接")
-            force_reconnect = True
-            last_reconnect_time = cycle_start_time
-            decode_error_count = 0
-            last_error_reset_time = cycle_start_time
-        
-        # 3. 检查是否因错误过多需要重连
-        if auto_reconnect and (cycle_start_time - last_error_reset_time) >= error_check_window:
-            if decode_error_count >= max_decode_errors:
-                print(f"[{name}] 错误重连：{error_check_window}秒内发生{decode_error_count}个解码错误，强制重连")
-                force_reconnect = True
-                last_reconnect_time = cycle_start_time
-            decode_error_count = 0
-            last_error_reset_time = cycle_start_time
-        
-        # 4. 如果需要重连，先释放现有连接
-        if force_reconnect and cap:
-            print(f"[{name}] 执行重连，释放当前连接")
-            cap.release()
+            if cap:
+                cap.release()
             cap = None
-            force_reconnect = False
-        
-        # 5. 冷却状态处理
+            last_reconnect_time = time.time()
+            continue
+
         if state == 'cooldown':
-            if cycle_start_time < cooldown_until:
-                continue  # 继续冷却，但仍然检查重连
+            if time.time() < cooldown_until:
+                time.sleep(0.1)
+                continue
             else:
                 print(f"[{name}] 状态切换: cooldown -> idle (冷却结束)")
                 state = 'idle'
-        
-        # 6. 如果没有连接或连接无效，创建新连接
+                idle_frame_counter = 0
+
         if not cap or not cap.isOpened():
-            print(f"[{name}] 创建新的视频连接...")
             cap = create_video_capture_with_hwdecode(url, config, name)
             if not cap or not cap.isOpened():
                 print(f"[{name}] 无法打开视频流: {url}，5秒后重试")
@@ -222,135 +176,140 @@ def worker(stream_cfg, config):
                 cap = None
                 time.sleep(5)
                 continue
-            
-            # 初始化缓冲区（每次重连都重新初始化）
             fps = cap.get(cv2.CAP_PROP_FPS)
             width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            alarm_buf_len = int(alarm_duration * (fps if fps > 0 else 25))
-            frame_buffer = deque(maxlen=alarm_buf_len)
-            alarm_flags = deque(maxlen=alarm_buf_len)
-            wave_counts = deque(maxlen=alarm_buf_len)
-            nowave_counts = deque(maxlen=alarm_buf_len)
-            print(f"[{name}] 连接成功，fps={fps}, 分辨率={width}x{height}, 缓冲区长度={alarm_buf_len}")
-        
-        # 7. 读取帧
-        ret, frame = cap.read()
-        if not ret:
-            print(f"[{name}] 读取帧失败，标记需要重连")
-            decode_error_count += 1  # 增加解码错误计数
-            if cap:
-                cap.release()
-            cap = None  # 重置cap变量
-            continue  # 回到循环开始，会重新创建连接
-        
-        # 8. 检查帧质量
-        if skip_frame_on_error and frame is not None:
-            # 简单的帧质量检查：检查是否有明显的损坏像素
-            frame_mean = frame.mean()
-            if frame_mean < 1 or frame_mean > 254:  # 异常亮度值
-                error_count += 1
-                decode_error_count += 1  # 增加解码错误计数
-                if error_count >= max_error_count:
-                    print(f"[{name}] 检测到连续{error_count}个错误帧，跳过处理")
-                    time.sleep(error_recovery_delay)
-                    error_count = 0
-                    continue
+            if fps > 0:
+                alarm_buf_len = int(alarm_duration * fps)
             else:
-                error_count = 0
-                last_successful_frame_time = time.time()
-        
-        # 9. 执行检测
-        detect_start = time.time()
-        results = model(frame, conf=confidence, verbose=False)[0]
-        detect_end = time.time()
-        detect_time_ms = (detect_end - detect_start) * 1000
-        
-        # 10. 处理检测结果
-        boxes = results.boxes
-        wave_count = 0
-        nowave_count = 0
-        for box in boxes:
-            cls_id = int(box.cls[0])
-            conf_score = float(box.conf[0])
-            if conf_score < confidence:
-                continue
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            color = color_map[cls_id % len(color_map)]
-            label = f"{names[cls_id]} {conf_score:.2f}"
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            cv2.putText(frame, label, (x1, y1-10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-            if cls_id == 0:
-                wave_count += 1
-            if cls_id == 1:
-                nowave_count += 1
-        
-        has_alarm_class = (wave_count > 0 or nowave_count > 0)
-        
-        # 11. 状态切换逻辑（添加详细日志）
-        old_state = state
+                alarm_buf_len = 75
+            print(f"[{name}] 连接成功，fps={fps}, 分辨率={width}x{height}, 报警缓冲区长度={alarm_buf_len}")
+            last_reconnect_time = time.time()  # 连接成功后重置重连计时
+
         if state == 'idle':
-            if has_alarm_class:
+            # 跳帧检测
+            for _ in range(idle_detect_interval-1):
+                cap.grab()
+            ret, frame = cap.read()
+            if not ret:
+                print(f"[{name}] idle模式读取帧失败，重连")
+                cap.release()
+                cap = None
+                continue
+            results = model(frame, conf=confidence, verbose=False)[0]
+            # 在画面上显示所有检测到的目标
+            for box in results.boxes:
+                cls_id = int(box.cls[0])
+                conf_score = float(box.conf[0])
+                x1, y1, x2, y2 = map(int, box.xyxy[0])
+                if cls_id == 0:
+                    # palm类别，左上角显示waving，右侧中间显示置信度，均为黑底白字
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color_box, 2)
+                    # waving文字
+                    text = 'waving'
+                    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+                    cv2.rectangle(frame, (x1, y1-10-th), (x1+tw+4, y1-10+4), (0,0,0), -1)
+                    cv2.putText(frame, text, (x1+2, y1-10+th), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+                    # 置信度分数
+                    conf_text = f"{conf_score:.2f}"
+                    (cw, ch), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+                    y_mid = (y1 + y2) // 2
+                    cv2.rectangle(frame, (x2+5, y_mid-ch), (x2+5+cw+4, y_mid+ch+4), (0,0,0), -1)
+                    cv2.putText(frame, conf_text, (x2+7, y_mid+ch), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+                # 其它类别不显示任何文字
+            palm_found = False
+            palm_roi = None  # 先初始化
+            for box in results.boxes:
+                cls_id = int(box.cls[0])
+                if cls_id == 0:
+                    palm_found = True
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    palm_roi = (x1, y1, x2, y2)
+                    break
+            global_frame_counter += 1
+            print(f"[{name}] [idle] 已处理帧数: {global_frame_counter}")
+            if palm_found:
+                last_palm_roi = palm_roi  # 立即保存初始ROI，确保active分支可用
+                print(f"[{name}] 状态切换: idle -> active (检测到palm)")
                 state = 'active'
-                print(f"[{name}] 状态切换: idle -> active (检测到 wave:{wave_count}, nowave:{nowave_count})")
-        elif state == 'active':
-            if not has_alarm_class:
+                active_buffer = []
+                palm_frame_count = 0
+                active_frame_counter = 0
+                continue  # 进入active
+            continue
+
+        if state == 'active':
+            # ROI区域由上次检测到的palm框决定，每次检测到palm时更新
+            if 'last_palm_roi' not in locals() or last_palm_roi is None:
+                print(f"[{name}] 警告：active状态下last_palm_roi无效，回退idle")
                 state = 'idle'
-                print(f"[{name}] 状态切换: active -> idle (未检测到目标)")
-        
-        # 12. 更新缓冲区（只在非冷却状态下且缓冲区已初始化）
-        if (state != 'cooldown' and frame_buffer is not None and 
-            alarm_flags is not None and wave_counts is not None and nowave_counts is not None):
-            frame_buffer.append(frame.copy())
-            alarm_flags.append(has_alarm_class)
-            wave_counts.append(wave_count)
-            nowave_counts.append(nowave_count)
-        
-        # 13. 报警逻辑（只在active状态下检查且缓冲区已初始化）
-        if (state == 'active' and alarm_flags is not None and wave_counts is not None and 
-            nowave_counts is not None and len(alarm_flags) == alarm_buf_len):
-            if all(alarm_flags):
-                total_wave = sum(wave_counts)
-                total_nowave = sum(nowave_counts)
-                if total_nowave == 0:
-                    ratio = float('inf') if total_wave > 0 else 0
-                else:
-                    ratio = total_wave / total_nowave
-                
-                print(f"[{name}] 报警检查: 连续{alarm_duration}秒检测到目标, wave:{total_wave}, nowave:{total_nowave}, 比例:{ratio:.2f}")
-                
-                if ratio >= 3:
+                continue
+            x1, y1, x2, y2 = last_palm_roi
+            roi_x1 = max(0, x1-300)
+            roi_y1 = max(0, y1-300)
+            roi_x2 = min(width, x2+300)
+            roi_y2 = min(height, y2+300)
+            ret, frame = cap.read()
+            if not ret:
+                print(f"[{name}] active模式读取帧失败，重连")
+                cap.release()
+                cap = None
+                state = 'idle'
+                continue
+            roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
+            results = model(roi, conf=confidence, verbose=False)[0]
+            palm_in_this_frame = False
+            new_palm_roi = None
+            for i, box in enumerate(results.boxes):
+                cls_id = int(box.cls[0])
+                if cls_id == 0:
+                    palm_in_this_frame = True
+                    rx1, ry1, rx2, ry2 = map(int, box.xyxy[0])
+                    x1g, y1g, x2g, y2g = rx1+roi_x1, ry1+roi_y1, rx2+roi_x1, ry2+roi_y1
+                    new_palm_roi = (x1g, y1g, x2g, y2g)
+                    cv2.rectangle(frame, (x1g, y1g), (x2g, y2g), color_box, 2)
+                    text = 'waving'
+                    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+                    cv2.rectangle(frame, (x1g, y1g-10-th), (x1g+tw+4, y1g-10+4), (0,0,0), -1)
+                    cv2.putText(frame, text, (x1g+2, y1g-10+th), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+                    conf_text = f"{float(box.conf[0]):.2f}"
+                    (cw, ch), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+                    y_mid = (y1g + y2g) // 2
+                    cv2.rectangle(frame, (x2g+5, y_mid-ch), (x2g+5+cw+4, y_mid+ch+4), (0,0,0), -1)
+                    cv2.putText(frame, conf_text, (x2g+7, y_mid+ch), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+                    if hasattr(results, 'keypoints') and results.keypoints is not None:
+                        kpts = results.keypoints.xy[i]
+                        for idx, (x, y) in enumerate(kpts):
+                            cv2.circle(frame, (int(x)+roi_x1, int(y)+roi_y1), 3, color_kpt, -1)
+                        for conn in mediapipe_connections:
+                            pt1 = kpts[conn[0]]
+                            pt2 = kpts[conn[1]]
+                            cv2.line(frame, (int(pt1[0])+roi_x1, int(pt1[1])+roi_y1), (int(pt2[0])+roi_x1, int(pt2[1])+roi_y1), color_line, 2)
+                    break
+            if palm_in_this_frame and new_palm_roi is not None:
+                last_palm_roi = new_palm_roi
+                palm_frame_count += 1
+            active_buffer.append(frame.copy())
+            active_frame_counter += 1
+            global_frame_counter += 1
+            print(f"[{name}] [active] 已处理帧数: {global_frame_counter}")
+            # 满30帧立即报警，否则采满75帧后再判断
+            if palm_frame_count >= 30 or active_frame_counter >= alarm_buf_len:
+                if palm_frame_count >= 30:
                     ts = time.strftime('%Y%m%d_%H%M%S')
                     alarm_path = os.path.join(alarm_dir, f'{name}_{ts}.mp4')
                     alarm_writer = cv2.VideoWriter(alarm_path, fourcc, fps if fps > 0 else 25, (width, height))
-                    if frame_buffer is not None:
-                        for f in frame_buffer:
-                            alarm_writer.write(f)
+                    for f in active_buffer:
+                        alarm_writer.write(f)
                     alarm_writer.release()
-                    print(f"[{name}] !!! 触发报警：wave/nowave比例{ratio:.2f}>=3，报警片段: {alarm_path}")
-                    play_video_window(alarm_path, window_name=f'ALARM-{name}', wait=int(1000/(fps if fps > 0 else 25)))
+                    print(f"[{name}] !!! 触发报警：3秒内palm帧数{palm_frame_count}>=30，报警片段: {alarm_path}")
+                    play_video_window(alarm_path, window_name=f'ALARM-{name}', wait=30)
                     state = 'cooldown'
                     cooldown_until = time.time() + cooldown_seconds
-                    print(f"[{name}] 状态切换: active -> cooldown (报警触发，冷却{cooldown_seconds}秒)")
-        
-        # 14. 检测间隔控制 - 根据实际检测耗时动态调整sleep时间
-        cycle_end_time = time.time()
-        total_cycle_time_ms = (cycle_end_time - cycle_start_time) * 1000
-        
-        # 计算需要sleep的时间
-        sleep_time_ms = detect_interval_ms - total_cycle_time_ms
-        
-        if sleep_time_ms > 0:
-            sleep_time_seconds = sleep_time_ms / 1000.0
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{name}] 检测耗时: {detect_time_ms:.2f}ms, 总周期: {total_cycle_time_ms:.2f}ms, sleep: {sleep_time_ms:.2f}ms, 状态: {state}")
-            time.sleep(sleep_time_seconds)
-        else:
-            print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{name}] 检测耗时: {detect_time_ms:.2f}ms, 总周期: {total_cycle_time_ms:.2f}ms, 无需sleep (超时), 状态: {state}")
-    
-    # 清理资源
-    if cap:
-        cap.release()
-        print(f"[{name}] 进程结束，释放资源")
+                else:
+                    print(f"[{name}] 3秒内palm帧数{palm_frame_count}<30，丢弃片段，回到idle")
+                    state = 'idle'
+                continue
 
 def main():
     config = load_config()
