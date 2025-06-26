@@ -144,21 +144,18 @@ def worker(stream_cfg, config):
         (0,13),(13,14),(14,15),(15,16), # 无名指
         (0,17),(17,18),(18,19),(19,20)  # 小指
     ]
-    # 新增：定时重连相关变量
-    reconnect_interval = int(config.get('reconnect_interval', 120))  # 秒
-    last_reconnect_time = time.time()
     # 新增：全局帧计数
     global_frame_counter = 0
 
     while True:
         # 定时重连逻辑
-        if time.time() - last_reconnect_time >= reconnect_interval:
-            print(f"[{name}] 定期重连：已运行{reconnect_interval}秒，主动重新连接")
-            if cap:
-                cap.release()
-            cap = None
-            last_reconnect_time = time.time()
-            continue
+        # if time.time() - last_reconnect_time >= reconnect_interval:
+        #     print(f"[{name}] 定期重连：已运行{reconnect_interval}秒，主动重新连接")
+        #     if cap:
+        #         cap.release()
+        #     cap = None
+        #     last_reconnect_time = time.time()
+        #     continue
 
         if state == 'cooldown':
             if time.time() < cooldown_until:
@@ -186,7 +183,7 @@ def worker(stream_cfg, config):
             else:
                 alarm_buf_len = 75
             print(f"[{name}] 连接成功，fps={fps}, 分辨率={width}x{height}, 报警缓冲区长度={alarm_buf_len}")
-            last_reconnect_time = time.time()  # 连接成功后重置重连计时
+            # last_reconnect_time = time.time()  # 连接成功后重置重连计时
 
         if state == 'idle':
             # 跳帧检测
