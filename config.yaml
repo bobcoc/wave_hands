@@ -30,6 +30,7 @@ video_decode:
   max_decode_errors: 50  # 最大解码错误数后强制重连
   error_check_window: 30  # 错误统计窗口(秒)
 teacher_height_threshold: 700  # 教师过滤阈值（高度大于此像素值的才被认为是教师）
+alarm_video_overlay_level: 0  # 报警视频叠加等级，0=不叠加，1=画palm框，2=画palm框和landmarks
 
 streams:
   - name: B603

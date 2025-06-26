@@ -8,6 +8,7 @@ from collections import deque
 from multiprocessing import Process
 import multiprocessing
 from alarm_video_popup import show_alarm_video_popup
+import numpy as np
 
 # 读取配置文件
 def load_config(config_path='config.yaml'):
@@ -102,6 +103,35 @@ def create_video_capture_with_hwdecode(url, config, name):
     
     return cap
 
+def draw_alarm_overlay(frame, results, level, mediapipe_connections=None):
+    out_frame = frame.copy()
+    if level == 0 or results is None:
+        return out_frame
+    for i, box in enumerate(getattr(results, 'boxes', [])):
+        cls_id = int(box.cls[0])
+        if cls_id == 0:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            cv2.rectangle(out_frame, (x1, y1), (x2, y2), (0,255,0), 2)
+            text = 'waving'
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+            cv2.rectangle(out_frame, (x1, y1-10-th), (x1+tw+4, y1-10+4), (0,0,0), -1)
+            cv2.putText(out_frame, text, (x1+2, y1-10+th), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+            conf_text = f"{float(box.conf[0]):.2f}"
+            (cw, ch), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+            y_mid = (y1 + y2) // 2
+            cv2.rectangle(out_frame, (x2+5, y_mid-ch), (x2+5+cw+4, y_mid+ch+4), (0,0,0), -1)
+            cv2.putText(out_frame, conf_text, (x2+7, y_mid+ch), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+            if level == 2 and hasattr(results, 'keypoints') and results.keypoints is not None:
+                kpts = results.keypoints.xy[i]
+                for idx, (x, y) in enumerate(kpts):
+                    cv2.circle(out_frame, (int(x), int(y)), 3, (0,255,255), -1)
+                if mediapipe_connections:
+                    for conn in mediapipe_connections:
+                        pt1 = kpts[conn[0]]
+                        pt2 = kpts[conn[1]]
+                        cv2.line(out_frame, (int(pt1[0]), int(pt1[1])), (int(pt2[0]), int(pt2[1])), (255,255,255), 2)
+    return out_frame
+
 def worker(stream_cfg, config):
     import cv2
     import time
@@ -118,6 +148,7 @@ def worker(stream_cfg, config):
     alarm_duration = int(config.get('alarm_duration', 3))
     cooldown_seconds = int(config.get('cooldown_seconds', 60))
     idle_detect_interval = int(config.get('idle_detect_interval', 5))  # 新增，idle下每N帧检测一次
+    alarm_video_overlay_level = int(config.get('alarm_video_overlay_level', 0))  # 0=不叠加，1=画palm框，2=画palm框和landmarks
 
     if not os.path.exists(alarm_dir):
         os.makedirs(alarm_dir)
@@ -196,26 +227,8 @@ def worker(stream_cfg, config):
                 cap = None
                 continue
             results = model(frame, conf=confidence, verbose=False)[0]
-            # 在画面上显示所有检测到的目标
-            for box in results.boxes:
-                cls_id = int(box.cls[0])
-                conf_score = float(box.conf[0])
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                if cls_id == 0:
-                    # palm类别，左上角显示waving，右侧中间显示置信度，均为黑底白字
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), color_box, 2)
-                    # waving文字
-                    text = 'waving'
-                    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-                    cv2.rectangle(frame, (x1, y1-10-th), (x1+tw+4, y1-10+4), (0,0,0), -1)
-                    cv2.putText(frame, text, (x1+2, y1-10+th), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
-                    # 置信度分数
-                    conf_text = f"{conf_score:.2f}"
-                    (cw, ch), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-                    y_mid = (y1 + y2) // 2
-                    cv2.rectangle(frame, (x2+5, y_mid-ch), (x2+5+cw+4, y_mid+ch+4), (0,0,0), -1)
-                    cv2.putText(frame, conf_text, (x2+7, y_mid+ch), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
-                # 其它类别不显示任何文字
+            frame_to_show = draw_alarm_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
+            # 在画面上显示所有检测到的目标（已统一到draw_alarm_overlay）
             palm_found = False
             palm_roi = None  # 先初始化
             for box in results.boxes:
@@ -266,25 +279,9 @@ def worker(stream_cfg, config):
                     rx1, ry1, rx2, ry2 = map(int, box.xyxy[0])
                     x1g, y1g, x2g, y2g = rx1+roi_x1, ry1+roi_y1, rx2+roi_x1, ry2+roi_y1
                     new_palm_roi = (x1g, y1g, x2g, y2g)
-                    cv2.rectangle(frame, (x1g, y1g), (x2g, y2g), color_box, 2)
-                    text = 'waving'
-                    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-                    cv2.rectangle(frame, (x1g, y1g-10-th), (x1g+tw+4, y1g-10+4), (0,0,0), -1)
-                    cv2.putText(frame, text, (x1g+2, y1g-10+th), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
-                    conf_text = f"{float(box.conf[0]):.2f}"
-                    (cw, ch), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-                    y_mid = (y1g + y2g) // 2
-                    cv2.rectangle(frame, (x2g+5, y_mid-ch), (x2g+5+cw+4, y_mid+ch+4), (0,0,0), -1)
-                    cv2.putText(frame, conf_text, (x2g+7, y_mid+ch), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
-                    if hasattr(results, 'keypoints') and results.keypoints is not None:
-                        kpts = results.keypoints.xy[i]
-                        for idx, (x, y) in enumerate(kpts):
-                            cv2.circle(frame, (int(x)+roi_x1, int(y)+roi_y1), 3, color_kpt, -1)
-                        for conn in mediapipe_connections:
-                            pt1 = kpts[conn[0]]
-                            pt2 = kpts[conn[1]]
-                            cv2.line(frame, (int(pt1[0])+roi_x1, int(pt1[1])+roi_y1), (int(pt2[0])+roi_x1, int(pt2[1])+roi_y1), color_line, 2)
                     break
+            # 画面显示统一调用draw_alarm_overlay
+            frame_to_show = draw_alarm_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
             if palm_in_this_frame and new_palm_roi is not None:
                 last_palm_roi = new_palm_roi
                 palm_frame_count += 1
@@ -298,8 +295,13 @@ def worker(stream_cfg, config):
                     ts = time.strftime('%Y%m%d_%H%M%S')
                     alarm_path = os.path.join(alarm_dir, f'{name}_{ts}.mp4')
                     alarm_writer = cv2.VideoWriter(alarm_path, fourcc, fps if fps > 0 else 25, (width, height))
-                    for f in active_buffer:
-                        alarm_writer.write(f)
+                    for idx, f in enumerate(active_buffer):
+                        if alarm_video_overlay_level == 0:
+                            alarm_writer.write(f)
+                        else:
+                            results = model(f, conf=confidence, verbose=False)[0]
+                            overlayed = draw_alarm_overlay(f, results, alarm_video_overlay_level, mediapipe_connections)
+                            alarm_writer.write(overlayed)
                     alarm_writer.release()
                     print(f"[{name}] !!! 触发报警：3秒内palm帧数{palm_frame_count}>=30，报警片段: {alarm_path}")
                     multiprocessing.Process(target=show_alarm_video_popup, args=(alarm_path, f'ALARM-{name}')).start()
