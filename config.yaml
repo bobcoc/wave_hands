@@ -39,3 +39,5 @@ streams:
     url: rtsp://admin:HuaWei@12345@10.0.14.79:554/LiveMedia/ch1/Media1
   - name: B606
     url: rtsp://admin:HuaWei@12345@10.0.14.77:554/LiveMedia/ch1/Media1
+
+wechat_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=0c88b16e-6bfe-476e-baa0-64ad56703c0a"

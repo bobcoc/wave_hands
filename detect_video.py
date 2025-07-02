@@ -9,6 +9,8 @@ from multiprocessing import Process
 import multiprocessing
 from alarm_video_popup import show_alarm_video_popup
 import numpy as np
+import requests
+from urllib.parse import urlparse, parse_qs
 
 # 读取配置文件
 def load_config(config_path='config.yaml'):
@@ -305,12 +307,96 @@ def worker(stream_cfg, config):
                     alarm_writer.release()
                     print(f"[{name}] !!! 触发报警：3秒内palm帧数{palm_frame_count}>=30，报警片段: {alarm_path}")
                     multiprocessing.Process(target=show_alarm_video_popup, args=(alarm_path, f'ALARM-{name}')).start()
+                    # 微信报警推送
+                    try:
+                        webhook_url = config.get('wechat_webhook_url')
+                        if webhook_url:
+                            text_msg = f"{name}有老师举手，请及时处理"
+                            send_wechat_text_message(webhook_url, text_msg)
+                            media_id = upload_file_to_wechat(alarm_path, webhook_url)
+                            if media_id:
+                                send_wechat_file_message(webhook_url, media_id)
+                            else:
+                                print(f"[WeChat] 未获取到media_id，文件推送失败")
+                        else:
+                            print("[WeChat] 未配置wechat_webhook_url，跳过微信推送")
+                    except Exception as e:
+                        print(f"[WeChat] 微信报警推送异常: {e}")
                     state = 'cooldown'
                     cooldown_until = time.time() + cooldown_seconds
                 else:
                     print(f"[{name}] 3秒内palm帧数{palm_frame_count}<30，丢弃片段，回到idle")
                     state = 'idle'
                 continue
+
+def upload_file_to_wechat(file_path, webhook_url):
+    """
+    上传文件到企业微信群，返回media_id。
+    """
+    try:
+        # 解析key
+        parsed = urlparse(webhook_url)
+        key = parse_qs(parsed.query).get('key', [None])[0]
+        if not key:
+            print("[WeChat] webhook_url缺少key参数")
+            return None
+        upload_url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media?key={key}&type=file"
+        with open(file_path, 'rb') as f:
+            files = {'media': (os.path.basename(file_path), f, 'application/octet-stream')}
+            resp = requests.post(upload_url, files=files)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('errcode') == 0 and 'media_id' in data:
+                return data['media_id']
+            else:
+                print(f"[WeChat] 上传文件失败: {data}")
+        else:
+            print(f"[WeChat] 上传文件HTTP错误: {resp.status_code}")
+    except Exception as e:
+        print(f"[WeChat] 上传文件异常: {e}")
+    return None
+
+def send_wechat_file_message(webhook_url, media_id):
+    """
+    通过Webhook推送文件类型消息到群。
+    """
+    try:
+        payload = {
+            "msgtype": "file",
+            "file": {"media_id": media_id}
+        }
+        resp = requests.post(webhook_url, json=payload)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('errcode') == 0:
+                print("[WeChat] 文件消息推送成功")
+            else:
+                print(f"[WeChat] 文件消息推送失败: {data}")
+        else:
+            print(f"[WeChat] 文件消息推送HTTP错误: {resp.status_code}")
+    except Exception as e:
+        print(f"[WeChat] 文件消息推送异常: {e}")
+
+def send_wechat_text_message(webhook_url, text):
+    """
+    通过Webhook推送文字消息到群。
+    """
+    try:
+        payload = {
+            "msgtype": "text",
+            "text": {"content": text}
+        }
+        resp = requests.post(webhook_url, json=payload)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data.get('errcode') == 0:
+                print("[WeChat] 文字消息推送成功")
+            else:
+                print(f"[WeChat] 文字消息推送失败: {data}")
+        else:
+            print(f"[WeChat] 文字消息推送HTTP错误: {resp.status_code}")
+    except Exception as e:
+        print(f"[WeChat] 文字消息推送异常: {e}")
 
 def main():
     config = load_config()
