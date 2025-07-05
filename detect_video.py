@@ -126,12 +126,12 @@ def draw_alarm_overlay(frame, results, level, mediapipe_connections=None):
             if level == 2 and hasattr(results, 'keypoints') and results.keypoints is not None:
                 kpts = results.keypoints.xy[i]
                 for idx, (x, y) in enumerate(kpts):
-                    cv2.circle(out_frame, (int(x), int(y)), 3, (0,255,255), -1)
+                    cv2.circle(out_frame, (int(x), int(y)), 2, (0,255,0), -1)
                 if mediapipe_connections:
                     for conn in mediapipe_connections:
                         pt1 = kpts[conn[0]]
                         pt2 = kpts[conn[1]]
-                        cv2.line(out_frame, (int(pt1[0]), int(pt1[1])), (int(pt2[0]), int(pt2[1])), (255,255,255), 2)
+                        cv2.line(out_frame, (int(pt1[0]), int(pt1[1])), (int(pt2[0]), int(pt2[1])), (255,0,0), 1)
     return out_frame
 
 def worker(stream_cfg, config):
@@ -222,6 +222,7 @@ def worker(stream_cfg, config):
             # 跳帧检测
             for _ in range(idle_detect_interval-1):
                 cap.grab()
+                time.sleep(0.02)
             ret, frame = cap.read()
             if not ret:
                 print(f"[{name}] idle模式读取帧失败，重连")
