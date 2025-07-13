@@ -1,5 +1,5 @@
 ultralytics
-opencv-python
+opencv-python>=4.8.0
 pyyaml
 numpy>=1.21.0
 matplotlib>=3.5.0

@@ -17,6 +17,42 @@ def load_config(config_path='config.yaml'):
     with open(config_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
 
+# 新增：手势分类函数
+import numpy as np
+
+def classify_hand_pose(keypoints):
+    """
+    输入: keypoints (21,2) ndarray，顺序与MediaPipe一致
+    输出: 'Left Palm', 'Left Back', 'Right Palm', 'Right Back', 'Unknown'
+    """
+    if keypoints is None or len(keypoints) != 21:
+        return "Unknown"
+    kpts = np.array(keypoints)
+    # 1. 判断左右手（摄像头视角）
+    # 大拇指指尖(4)和小指指尖(20)的x坐标
+    thumb_tip_x = kpts[4,0]
+    pinky_tip_x = kpts[20,0]
+    if thumb_tip_x < pinky_tip_x:
+        hand_type = "Right"  # 右手
+    else:
+        hand_type = "Left"   # 左手
+    # 2. 判断正反面
+    # 用掌心(0)、食指根(5)、小指根(17)三点确定手掌平面
+    v1 = kpts[5] - kpts[0]
+    v2 = kpts[17] - kpts[0]
+    # 计算法向量（二维图像，z分量用叉乘符号方向）
+    cross = v1[0]*v2[1] - v1[1]*v2[0]
+    # 经验：掌心朝向摄像头时，cross>0为Palm，cross<0为Back（如有反可调换）
+    if hand_type == "Right":
+        is_palm = cross > 0
+    else:
+        is_palm = cross < 0
+    if is_palm:
+        side = "Palm"
+    else:
+        side = "Back"
+    return f"{hand_type} {side}"
+
 def play_video_window(video_path, window_name='Alarm', wait=30):
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -33,10 +69,15 @@ def play_video_window(video_path, window_name='Alarm', wait=30):
     cv2.destroyWindow(window_name)
 
 # 创建支持硬件解码的VideoCapture对象
-def create_video_capture_with_hwdecode(url, config, name):
+def create_video_capture_with_hwdecode(url, config, name, is_local_file=False):
     """
     创建支持硬件解码的VideoCapture对象
     """
+    import os
+    if is_local_file:
+        print(f"[{name}] 打开本地视频文件: {url}")
+        cap = cv2.VideoCapture(url)
+        return cap
     video_decode_config = config.get('video_decode', {})
     use_hardware_decode = video_decode_config.get('use_hardware_decode', False)
     buffer_size = video_decode_config.get('buffer_size', 1)
@@ -114,7 +155,17 @@ def draw_alarm_overlay(frame, results, level, mediapipe_connections=None):
         if cls_id == 0:
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             cv2.rectangle(out_frame, (x1, y1), (x2, y2), (0,255,0), 2)
-            text = 'waving'
+            # 新增：判别手势类型
+            hand_label = "waving"
+            if level == 2 and hasattr(results, 'keypoints') and results.keypoints is not None:
+                kpts = results.keypoints.xy[i]
+                if isinstance(kpts, np.ndarray):
+                    hand_label = classify_hand_pose(kpts)
+                else:
+                    hand_label = "Unknown"
+            else:
+                hand_label = "Unknown"
+            text = hand_label
             (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
             cv2.rectangle(out_frame, (x1, y1-10-th), (x1+tw+4, y1-10+4), (0,0,0), -1)
             cv2.putText(out_frame, text, (x1+2, y1-10+th), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
@@ -140,6 +191,7 @@ def worker(stream_cfg, config):
     from collections import deque
     from ultralytics import YOLO
     import os
+    from urllib.parse import urlparse
 
     name = stream_cfg.get('name', 'noname')
     url = stream_cfg.get('url')
@@ -180,16 +232,19 @@ def worker(stream_cfg, config):
     # 新增：全局帧计数
     global_frame_counter = 0
 
-    while True:
-        # 定时重连逻辑
-        # if time.time() - last_reconnect_time >= reconnect_interval:
-        #     print(f"[{name}] 定期重连：已运行{reconnect_interval}秒，主动重新连接")
-        #     if cap:
-        #         cap.release()
-        #     cap = None
-        #     last_reconnect_time = time.time()
-        #     continue
+    # 新增：判断是否本地视频文件
+    is_local_file = False
+    try:
+        if os.path.isfile(url) or (urlparse(url).scheme in ('', 'file')):
+            is_local_file = True
+    except Exception:
+        pass
 
+    # 本地视频时每帧都检测
+    if is_local_file:
+        idle_detect_interval = 1
+
+    while True:
         if state == 'cooldown':
             if time.time() < cooldown_until:
                 time.sleep(0.1)
@@ -200,12 +255,16 @@ def worker(stream_cfg, config):
                 idle_frame_counter = 0
 
         if not cap or not cap.isOpened():
-            cap = create_video_capture_with_hwdecode(url, config, name)
+            cap = create_video_capture_with_hwdecode(url, config, name, is_local_file=is_local_file)
             if not cap or not cap.isOpened():
                 print(f"[{name}] 无法打开视频流: {url}，5秒后重试")
                 if cap:
                     cap.release()
                 cap = None
+                # 本地视频：读完直接退出
+                if is_local_file:
+                    print(f"[{name}] 本地视频检测结束，进程退出。")
+                    break
                 time.sleep(5)
                 continue
             fps = cap.get(cv2.CAP_PROP_FPS)
@@ -216,10 +275,9 @@ def worker(stream_cfg, config):
             else:
                 alarm_buf_len = 75
             print(f"[{name}] 连接成功，fps={fps}, 分辨率={width}x{height}, 报警缓冲区长度={alarm_buf_len}")
-            # last_reconnect_time = time.time()  # 连接成功后重置重连计时
 
         if state == 'idle':
-            # 跳帧检测
+            # 本地视频每帧都检测
             for _ in range(idle_detect_interval-1):
                 cap.grab()
                 time.sleep(0.02)
@@ -228,12 +286,15 @@ def worker(stream_cfg, config):
                 print(f"[{name}] idle模式读取帧失败，重连")
                 cap.release()
                 cap = None
+                # 本地视频：读完直接退出
+                if is_local_file:
+                    print(f"[{name}] 本地视频检测结束，进程退出。")
+                    break
                 continue
             results = model(frame, conf=confidence, verbose=False)[0]
             frame_to_show = draw_alarm_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
-            # 在画面上显示所有检测到的目标（已统一到draw_alarm_overlay）
             palm_found = False
-            palm_roi = None  # 先初始化
+            palm_roi = None
             for box in results.boxes:
                 cls_id = int(box.cls[0])
                 if cls_id == 0:
@@ -243,18 +304,28 @@ def worker(stream_cfg, config):
                     break
             global_frame_counter += 1
             print(f"[{name}] [idle] 已处理帧数: {global_frame_counter}")
+            # 本地视频：一旦检测到palm立即报警
+            if is_local_file and palm_found:
+                last_palm_roi = palm_roi
+                print(f"[{name}] 状态切换: idle -> active (检测到palm, 本地视频立即报警)")
+                state = 'active'
+                active_buffer = []
+                palm_frame_count = 0
+                active_frame_counter = 0
+                # 记录报警起始帧号
+                alarm_start_frame = global_frame_counter
+                continue
             if palm_found:
-                last_palm_roi = palm_roi  # 立即保存初始ROI，确保active分支可用
+                last_palm_roi = palm_roi
                 print(f"[{name}] 状态切换: idle -> active (检测到palm)")
                 state = 'active'
                 active_buffer = []
                 palm_frame_count = 0
                 active_frame_counter = 0
-                continue  # 进入active
+                continue
             continue
 
         if state == 'active':
-            # ROI区域由上次检测到的palm框决定，每次检测到palm时更新
             if 'last_palm_roi' not in locals() or last_palm_roi is None:
                 print(f"[{name}] 警告：active状态下last_palm_roi无效，回退idle")
                 state = 'idle'
@@ -269,6 +340,24 @@ def worker(stream_cfg, config):
                 print(f"[{name}] active模式读取帧失败，重连")
                 cap.release()
                 cap = None
+                # 本地视频：到结尾时输出报警片段
+                if is_local_file:
+                    print(f"[{name}] 本地视频active结束，输出报警片段。")
+                    if active_buffer:
+                        ts = time.strftime('%Y%m%d_%H%M%S')
+                        alarm_path = os.path.join(alarm_dir, f'{name}_{ts}.mp4')
+                        alarm_writer = cv2.VideoWriter(alarm_path, fourcc, fps if fps > 0 else 25, (width, height))
+                        for idx, f in enumerate(active_buffer):
+                            if alarm_video_overlay_level == 0:
+                                alarm_writer.write(f)
+                            else:
+                                results = model(f, conf=confidence, verbose=False)[0]
+                                overlayed = draw_alarm_overlay(f, results, alarm_video_overlay_level, mediapipe_connections)
+                                alarm_writer.write(overlayed)
+                        alarm_writer.release()
+                        print(f"[{name}] !!! 本地视频触发报警，输出片段: {alarm_path}")
+                    print(f"[{name}] 本地视频检测结束，进程退出。")
+                    break
                 state = 'idle'
                 continue
             roi = frame[roi_y1:roi_y2, roi_x1:roi_x2]
@@ -283,7 +372,6 @@ def worker(stream_cfg, config):
                     x1g, y1g, x2g, y2g = rx1+roi_x1, ry1+roi_y1, rx2+roi_x1, ry2+roi_y1
                     new_palm_roi = (x1g, y1g, x2g, y2g)
                     break
-            # 画面显示统一调用draw_alarm_overlay
             frame_to_show = draw_alarm_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
             if palm_in_this_frame and new_palm_roi is not None:
                 last_palm_roi = new_palm_roi
@@ -292,9 +380,9 @@ def worker(stream_cfg, config):
             active_frame_counter += 1
             global_frame_counter += 1
             print(f"[{name}] [active] 已处理帧数: {global_frame_counter}")
-            # 满30帧立即报警，否则采满75帧后再判断
-            if palm_frame_count >= 30 or active_frame_counter >= alarm_buf_len:
-                if palm_frame_count >= 30:
+            # 满3秒或本地视频到结尾时输出报警
+            if (is_local_file and (active_frame_counter >= alarm_buf_len)) or (not is_local_file and palm_frame_count >= 30) or (not is_local_file and active_frame_counter >= alarm_buf_len):
+                if is_local_file or palm_frame_count >= 30:
                     ts = time.strftime('%Y%m%d_%H%M%S')
                     alarm_path = os.path.join(alarm_dir, f'{name}_{ts}.mp4')
                     alarm_writer = cv2.VideoWriter(alarm_path, fourcc, fps if fps > 0 else 25, (width, height))
@@ -306,25 +394,10 @@ def worker(stream_cfg, config):
                             overlayed = draw_alarm_overlay(f, results, alarm_video_overlay_level, mediapipe_connections)
                             alarm_writer.write(overlayed)
                     alarm_writer.release()
-                    print(f"[{name}] !!! 触发报警：3秒内palm帧数{palm_frame_count}>=30，报警片段: {alarm_path}")
-                    multiprocessing.Process(target=show_alarm_video_popup, args=(alarm_path, f'ALARM-{name}')).start()
-                    # 微信报警推送
-                    try:
-                        webhook_url = config.get('wechat_webhook_url')
-                        if webhook_url:
-                            text_msg = f"{name}有老师举手，请及时处理"
-                            send_wechat_text_message(webhook_url, text_msg)
-                            media_id = upload_file_to_wechat(alarm_path, webhook_url)
-                            if media_id:
-                                send_wechat_file_message(webhook_url, media_id)
-                            else:
-                                print(f"[WeChat] 未获取到media_id，文件推送失败")
-                        else:
-                            print("[WeChat] 未配置wechat_webhook_url，跳过微信推送")
-                    except Exception as e:
-                        print(f"[WeChat] 微信报警推送异常: {e}")
-                    state = 'cooldown'
-                    cooldown_until = time.time() + cooldown_seconds
+                    print(f"[{name}] !!! 触发报警：输出片段: {alarm_path}")
+                    if is_local_file:
+                        print(f"[{name}] 本地视频检测结束，进程退出。")
+                        break
                 else:
                     print(f"[{name}] 3秒内palm帧数{palm_frame_count}<30，丢弃片段，回到idle")
                     state = 'idle'
@@ -401,6 +474,15 @@ def send_wechat_text_message(webhook_url, text):
 
 def main():
     config = load_config()
+    video_file = config.get('video_file', None)
+    if video_file and str(video_file).strip():
+        # 检测本地视频文件，只开一个进程
+        stream_cfg = {
+            'name': 'local_video',
+            'url': video_file
+        }
+        worker(stream_cfg, config)
+        return
     streams = config.get('streams', [])
     if not streams:
         print('配置文件未找到streams字段或为空')
