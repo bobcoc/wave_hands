@@ -7,3 +7,5 @@
 /alarms
 /analysis_results
 /bbox_wave_analysis
+/.DS_Store
+/__pycache__
