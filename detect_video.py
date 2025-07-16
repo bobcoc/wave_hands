@@ -11,6 +11,7 @@ from alarm_video_popup import show_alarm_video_popup
 import numpy as np
 import requests
 from urllib.parse import urlparse, parse_qs
+from hand_detection_core import classify_hand_pose, draw_hand_overlay
 
 # 读取配置文件
 def load_config(config_path='config.yaml'):
@@ -19,39 +20,6 @@ def load_config(config_path='config.yaml'):
 
 # 新增：手势分类函数
 import numpy as np
-
-def classify_hand_pose(keypoints):
-    """
-    输入: keypoints (21,2) ndarray，顺序与MediaPipe一致
-    输出: 'Left Palm', 'Left Back', 'Right Palm', 'Right Back', 'Unknown'
-    """
-    if keypoints is None or len(keypoints) != 21:
-        return "Unknown"
-    kpts = np.array(keypoints)
-    # 1. 判断左右手（摄像头视角）
-    # 大拇指指尖(4)和小指指尖(20)的x坐标
-    thumb_tip_x = kpts[4,0]
-    pinky_tip_x = kpts[20,0]
-    if thumb_tip_x < pinky_tip_x:
-        hand_type = "Right"  # 右手
-    else:
-        hand_type = "Left"   # 左手
-    # 2. 判断正反面
-    # 用掌心(0)、食指根(5)、小指根(17)三点确定手掌平面
-    v1 = kpts[5] - kpts[0]
-    v2 = kpts[17] - kpts[0]
-    # 计算法向量（二维图像，z分量用叉乘符号方向）
-    cross = v1[0]*v2[1] - v1[1]*v2[0]
-    # 经验：掌心朝向摄像头时，cross>0为Palm，cross<0为Back（如有反可调换）
-    if hand_type == "Right":
-        is_palm = cross > 0
-    else:
-        is_palm = cross < 0
-    if is_palm:
-        side = "Palm"
-    else:
-        side = "Back"
-    return f"{hand_type} {side}"
 
 def play_video_window(video_path, window_name='Alarm', wait=30):
     cap = cv2.VideoCapture(video_path)
@@ -145,45 +113,6 @@ def create_video_capture_with_hwdecode(url, config, name, is_local_file=False):
             print(f"[{name}] 软件解码器创建异常: {e}")
     
     return cap
-
-def draw_alarm_overlay(frame, results, level, mediapipe_connections=None):
-    out_frame = frame.copy()
-    if level == 0 or results is None:
-        return out_frame
-    for i, box in enumerate(getattr(results, 'boxes', [])):
-        cls_id = int(box.cls[0])
-        if cls_id == 0:
-            x1, y1, x2, y2 = map(int, box.xyxy[0])
-            cv2.rectangle(out_frame, (x1, y1), (x2, y2), (0,255,0), 2)
-            # 新增：判别手势类型
-            hand_label = "waving"
-            if level == 2 and hasattr(results, 'keypoints') and results.keypoints is not None:
-                kpts = results.keypoints.xy[i]
-                if isinstance(kpts, np.ndarray):
-                    hand_label = classify_hand_pose(kpts)
-                else:
-                    hand_label = "Unknown"
-            else:
-                hand_label = "Unknown"
-            text = hand_label
-            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-            cv2.rectangle(out_frame, (x1, y1-10-th), (x1+tw+4, y1-10+4), (0,0,0), -1)
-            cv2.putText(out_frame, text, (x1+2, y1-10+th), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
-            conf_text = f"{float(box.conf[0]):.2f}"
-            (cw, ch), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-            y_mid = (y1 + y2) // 2
-            cv2.rectangle(out_frame, (x2+5, y_mid-ch), (x2+5+cw+4, y_mid+ch+4), (0,0,0), -1)
-            cv2.putText(out_frame, conf_text, (x2+7, y_mid+ch), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
-            if level == 2 and hasattr(results, 'keypoints') and results.keypoints is not None:
-                kpts = results.keypoints.xy[i]
-                for idx, (x, y) in enumerate(kpts):
-                    cv2.circle(out_frame, (int(x), int(y)), 2, (0,255,0), -1)
-                if mediapipe_connections:
-                    for conn in mediapipe_connections:
-                        pt1 = kpts[conn[0]]
-                        pt2 = kpts[conn[1]]
-                        cv2.line(out_frame, (int(pt1[0]), int(pt1[1])), (int(pt2[0]), int(pt2[1])), (255,0,0), 1)
-    return out_frame
 
 def worker(stream_cfg, config):
     import cv2
@@ -292,7 +221,7 @@ def worker(stream_cfg, config):
                     break
                 continue
             results = model(frame, conf=confidence, verbose=False)[0]
-            frame_to_show = draw_alarm_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
+            frame_to_show = draw_hand_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
             palm_found = False
             palm_roi = None
             for box in results.boxes:
@@ -352,7 +281,7 @@ def worker(stream_cfg, config):
                                 alarm_writer.write(f)
                             else:
                                 results = model(f, conf=confidence, verbose=False)[0]
-                                overlayed = draw_alarm_overlay(f, results, alarm_video_overlay_level, mediapipe_connections)
+                                overlayed = draw_hand_overlay(f, results, alarm_video_overlay_level, mediapipe_connections)
                                 alarm_writer.write(overlayed)
                         alarm_writer.release()
                         print(f"[{name}] !!! 本地视频触发报警，输出片段: {alarm_path}")
@@ -372,7 +301,7 @@ def worker(stream_cfg, config):
                     x1g, y1g, x2g, y2g = rx1+roi_x1, ry1+roi_y1, rx2+roi_x1, ry2+roi_y1
                     new_palm_roi = (x1g, y1g, x2g, y2g)
                     break
-            frame_to_show = draw_alarm_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
+            frame_to_show = draw_hand_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
             if palm_in_this_frame and new_palm_roi is not None:
                 last_palm_roi = new_palm_roi
                 palm_frame_count += 1
@@ -391,7 +320,7 @@ def worker(stream_cfg, config):
                             alarm_writer.write(f)
                         else:
                             results = model(f, conf=confidence, verbose=False)[0]
-                            overlayed = draw_alarm_overlay(f, results, alarm_video_overlay_level, mediapipe_connections)
+                            overlayed = draw_hand_overlay(f, results, alarm_video_overlay_level, mediapipe_connections)
                             alarm_writer.write(overlayed)
                     alarm_writer.release()
                     print(f"[{name}] !!! 触发报警：输出片段: {alarm_path}")
