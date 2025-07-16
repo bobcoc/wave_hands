@@ -49,8 +49,8 @@ def classify_hand_pose(keypoints):
         side = "Back"
     return f"{hand_type} {side}"
 
-def draw_hand_overlay(frame, results, level, mediapipe_connections=MEDIAPIPE_CONNECTIONS):
-    """绘制检测框、关键点、标签等"""
+def draw_hand_overlay(frame, results, level, mediapipe_connections=MEDIAPIPE_CONNECTIONS, font_scale=1.2, font_thickness=2):
+    """绘制检测框、关键点、标签等，可自定义字体大小和粗细"""
     out_frame = frame.copy()
     if level == 0 or results is None:
         return out_frame
@@ -64,19 +64,24 @@ def draw_hand_overlay(frame, results, level, mediapipe_connections=MEDIAPIPE_CON
                 kpts = results.keypoints.xy[i]
                 if isinstance(kpts, np.ndarray):
                     hand_label = classify_hand_pose(kpts)
+                elif hasattr(kpts, 'numpy'):  # 兼容 torch.Tensor
+                    hand_label = classify_hand_pose(kpts.numpy())
                 else:
                     hand_label = "Unknown"
             else:
                 hand_label = "Unknown"
             text = hand_label
-            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-            cv2.rectangle(out_frame, (x1, y1-10-th), (x1+tw+4, y1-10+4), (0,0,0), -1)
-            cv2.putText(out_frame, text, (x1+2, y1-10+th), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
+            # 文本上移到框上方，且加大背景高度
+            text_bg_top = max(0, y1 - 20 - th)
+            text_bg_bottom = y1 - 4
+            cv2.rectangle(out_frame, (x1, text_bg_top), (x1+tw+8, text_bg_bottom), (0,0,0), -1)
+            cv2.putText(out_frame, text, (x1+4, text_bg_bottom-4), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255,255,255), font_thickness)
             conf_text = f"{float(box.conf[0]):.2f}"
-            (cw, ch), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+            (cw, ch), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
             y_mid = (y1 + y2) // 2
-            cv2.rectangle(out_frame, (x2+5, y_mid-ch), (x2+5+cw+4, y_mid+ch+4), (0,0,0), -1)
-            cv2.putText(out_frame, conf_text, (x2+7, y_mid+ch), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+            cv2.rectangle(out_frame, (x2+5, y_mid-ch), (x2+5+cw+8, y_mid+ch+8), (0,0,0), -1)
+            cv2.putText(out_frame, conf_text, (x2+7, y_mid+ch+2), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255,255,255), font_thickness)
             if level == 2 and hasattr(results, 'keypoints') and results.keypoints is not None:
                 kpts = results.keypoints.xy[i]
                 for idx, (x, y) in enumerate(kpts):
