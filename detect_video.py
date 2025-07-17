@@ -11,15 +11,11 @@ from alarm_video_popup import show_alarm_video_popup
 import numpy as np
 import requests
 from urllib.parse import urlparse, parse_qs
-from hand_detection_core import classify_hand_pose, draw_hand_overlay
 
 # 读取配置文件
 def load_config(config_path='config.yaml'):
     with open(config_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
-
-# 新增：手势分类函数
-import numpy as np
 
 def play_video_window(video_path, window_name='Alarm', wait=30):
     cap = cv2.VideoCapture(video_path)
@@ -41,7 +37,6 @@ def create_video_capture_with_hwdecode(url, config, name):
     """
     创建支持硬件解码的VideoCapture对象
     """
-    import os
     video_decode_config = config.get('video_decode', {})
     use_hardware_decode = video_decode_config.get('use_hardware_decode', False)
     buffer_size = video_decode_config.get('buffer_size', 1)
@@ -110,6 +105,35 @@ def create_video_capture_with_hwdecode(url, config, name):
     
     return cap
 
+def draw_alarm_overlay(frame, results, level, mediapipe_connections=None):
+    out_frame = frame.copy()
+    if level == 0 or results is None:
+        return out_frame
+    for i, box in enumerate(getattr(results, 'boxes', [])):
+        cls_id = int(box.cls[0])
+        if cls_id == 0:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            cv2.rectangle(out_frame, (x1, y1), (x2, y2), (0,255,0), 2)
+            text = 'waving'
+            (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+            cv2.rectangle(out_frame, (x1, y1-10-th), (x1+tw+4, y1-10+4), (0,0,0), -1)
+            cv2.putText(out_frame, text, (x1+2, y1-10+th), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+            conf_text = f"{float(box.conf[0]):.2f}"
+            (cw, ch), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
+            y_mid = (y1 + y2) // 2
+            cv2.rectangle(out_frame, (x2+5, y_mid-ch), (x2+5+cw+4, y_mid+ch+4), (0,0,0), -1)
+            cv2.putText(out_frame, conf_text, (x2+7, y_mid+ch), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+            if level == 2 and hasattr(results, 'keypoints') and results.keypoints is not None:
+                kpts = results.keypoints.xy[i]
+                for idx, (x, y) in enumerate(kpts):
+                    cv2.circle(out_frame, (int(x), int(y)), 2, (0,255,0), -1)
+                if mediapipe_connections:
+                    for conn in mediapipe_connections:
+                        pt1 = kpts[conn[0]]
+                        pt2 = kpts[conn[1]]
+                        cv2.line(out_frame, (int(pt1[0]), int(pt1[1])), (int(pt2[0]), int(pt2[1])), (255,0,0), 1)
+    return out_frame
+
 def worker(stream_cfg, config):
     import cv2
     import time
@@ -125,7 +149,7 @@ def worker(stream_cfg, config):
     alarm_dir = config.get('alarm_dir', 'alarms')
     alarm_duration = int(config.get('alarm_duration', 3))
     cooldown_seconds = int(config.get('cooldown_seconds', 60))
-    idle_detect_interval = int(config.get('idle_detect_interval', 5))  # idle下每N帧检测一次
+    idle_detect_interval = int(config.get('idle_detect_interval', 5))  # 新增，idle下每N帧检测一次
     alarm_video_overlay_level = int(config.get('alarm_video_overlay_level', 0))  # 0=不叠加，1=画palm框，2=画palm框和landmarks
 
     if not os.path.exists(alarm_dir):
@@ -153,10 +177,19 @@ def worker(stream_cfg, config):
         (0,13),(13,14),(14,15),(15,16), # 无名指
         (0,17),(17,18),(18,19),(19,20)  # 小指
     ]
-    # 全局帧计数
+    # 新增：全局帧计数
     global_frame_counter = 0
 
     while True:
+        # 定时重连逻辑
+        # if time.time() - last_reconnect_time >= reconnect_interval:
+        #     print(f"[{name}] 定期重连：已运行{reconnect_interval}秒，主动重新连接")
+        #     if cap:
+        #         cap.release()
+        #     cap = None
+        #     last_reconnect_time = time.time()
+        #     continue
+
         if state == 'cooldown':
             if time.time() < cooldown_until:
                 time.sleep(0.1)
@@ -183,9 +216,10 @@ def worker(stream_cfg, config):
             else:
                 alarm_buf_len = 75
             print(f"[{name}] 连接成功，fps={fps}, 分辨率={width}x{height}, 报警缓冲区长度={alarm_buf_len}")
+            # last_reconnect_time = time.time()  # 连接成功后重置重连计时
 
         if state == 'idle':
-            # idle模式下每N帧检测一次
+            # 跳帧检测
             for _ in range(idle_detect_interval-1):
                 cap.grab()
                 time.sleep(0.02)
@@ -196,9 +230,10 @@ def worker(stream_cfg, config):
                 cap = None
                 continue
             results = model(frame, conf=confidence, verbose=False)[0]
-            frame_to_show = draw_hand_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
+            frame_to_show = draw_alarm_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
+            # 在画面上显示所有检测到的目标（已统一到draw_alarm_overlay）
             palm_found = False
-            palm_roi = None
+            palm_roi = None  # 先初始化
             for box in results.boxes:
                 cls_id = int(box.cls[0])
                 if cls_id == 0:
@@ -209,16 +244,17 @@ def worker(stream_cfg, config):
             global_frame_counter += 1
             print(f"[{name}] [idle] 已处理帧数: {global_frame_counter}")
             if palm_found:
-                last_palm_roi = palm_roi
+                last_palm_roi = palm_roi  # 立即保存初始ROI，确保active分支可用
                 print(f"[{name}] 状态切换: idle -> active (检测到palm)")
                 state = 'active'
                 active_buffer = []
                 palm_frame_count = 0
                 active_frame_counter = 0
-                continue
+                continue  # 进入active
             continue
 
         if state == 'active':
+            # ROI区域由上次检测到的palm框决定，每次检测到palm时更新
             if 'last_palm_roi' not in locals() or last_palm_roi is None:
                 print(f"[{name}] 警告：active状态下last_palm_roi无效，回退idle")
                 state = 'idle'
@@ -247,7 +283,8 @@ def worker(stream_cfg, config):
                     x1g, y1g, x2g, y2g = rx1+roi_x1, ry1+roi_y1, rx2+roi_x1, ry2+roi_y1
                     new_palm_roi = (x1g, y1g, x2g, y2g)
                     break
-            frame_to_show = draw_hand_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
+            # 画面显示统一调用draw_alarm_overlay
+            frame_to_show = draw_alarm_overlay(frame, results, alarm_video_overlay_level, mediapipe_connections)
             if palm_in_this_frame and new_palm_roi is not None:
                 last_palm_roi = new_palm_roi
                 palm_frame_count += 1
@@ -255,7 +292,7 @@ def worker(stream_cfg, config):
             active_frame_counter += 1
             global_frame_counter += 1
             print(f"[{name}] [active] 已处理帧数: {global_frame_counter}")
-            # 满3秒时输出报警
+            # 满30帧立即报警，否则采满75帧后再判断
             if palm_frame_count >= 30 or active_frame_counter >= alarm_buf_len:
                 if palm_frame_count >= 30:
                     ts = time.strftime('%Y%m%d_%H%M%S')
@@ -266,10 +303,28 @@ def worker(stream_cfg, config):
                             alarm_writer.write(f)
                         else:
                             results = model(f, conf=confidence, verbose=False)[0]
-                            overlayed = draw_hand_overlay(f, results, alarm_video_overlay_level, mediapipe_connections)
+                            overlayed = draw_alarm_overlay(f, results, alarm_video_overlay_level, mediapipe_connections)
                             alarm_writer.write(overlayed)
                     alarm_writer.release()
-                    print(f"[{name}] !!! 触发报警：输出片段: {alarm_path}")
+                    print(f"[{name}] !!! 触发报警：3秒内palm帧数{palm_frame_count}>=30，报警片段: {alarm_path}")
+                    multiprocessing.Process(target=show_alarm_video_popup, args=(alarm_path, f'ALARM-{name}')).start()
+                    # 微信报警推送
+                    try:
+                        webhook_url = config.get('wechat_webhook_url')
+                        if webhook_url:
+                            text_msg = f"{name}有老师举手，请及时处理"
+                            send_wechat_text_message(webhook_url, text_msg)
+                            media_id = upload_file_to_wechat(alarm_path, webhook_url)
+                            if media_id:
+                                send_wechat_file_message(webhook_url, media_id)
+                            else:
+                                print(f"[WeChat] 未获取到media_id，文件推送失败")
+                        else:
+                            print("[WeChat] 未配置wechat_webhook_url，跳过微信推送")
+                    except Exception as e:
+                        print(f"[WeChat] 微信报警推送异常: {e}")
+                    state = 'cooldown'
+                    cooldown_until = time.time() + cooldown_seconds
                 else:
                     print(f"[{name}] 3秒内palm帧数{palm_frame_count}<30，丢弃片段，回到idle")
                     state = 'idle'
