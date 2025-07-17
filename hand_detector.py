@@ -6,8 +6,8 @@ from mediapipe_hand import mediapipe_detect_hands, analyze_hand_pose
 class HandDetector:
     """统一的手势识别类，使用YOLO检测手掌位置，然后用MediaPipe或YOLO提取关键点"""
     
-    def __init__(self, detector='mediapipe', weights='weight/best.pt', confidence=0.5, 
-                 device='cpu', font_scale=1.2, font_thickness=2):
+    def __init__(self, detector='mediapipe', weights='weight/best.pt', confidence=0.2, 
+                 device='cpu', font_scale=1.2, font_thickness=2, margin_ratio=0.02):
         """
         初始化手势识别器
         :param detector: 'mediapipe' 或 'yolo'，选择关键点检测器
@@ -16,11 +16,13 @@ class HandDetector:
         :param device: 设备，'cpu' 或 'cuda'
         :param font_scale: 显示文字大小
         :param font_thickness: 显示文字粗细
+        :param margin_ratio: 边框扩展比例，相对于检测框的大小
         """
         self.detector_type = detector
         self.confidence = confidence
         self.font_scale = font_scale
         self.font_thickness = font_thickness
+        self.margin_ratio = margin_ratio
         
         # 骨架连线定义
         self.connections = [
@@ -63,11 +65,18 @@ class HandDetector:
                 # 获取边界框并扩大区域
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 conf = float(box.conf[0])  # 获取置信度值
-                margin = 50  # 扩大边界框以确保包含整个手
-                x1 = max(0, x1 - margin)
-                y1 = max(0, y1 - margin)
-                x2 = min(frame.shape[1], x2 + margin)
-                y2 = min(frame.shape[0], y2 + margin)
+                
+                # 计算动态边距
+                box_width = x2 - x1
+                box_height = y2 - y1
+                margin_x = int(box_width * self.margin_ratio)
+                margin_y = int(box_height * self.margin_ratio)
+                
+                # 扩展检测框
+                x1 = max(0, x1 - margin_x)
+                y1 = max(0, y1 - margin_y)
+                x2 = min(frame.shape[1], x2 + margin_x)
+                y2 = min(frame.shape[0], y2 + margin_y)
                 
                 # 提取ROI
                 roi = frame[y1:y2, x1:x2]

@@ -23,6 +23,7 @@ def detect_local_video(video_path, config):
     alarm_video_overlay_level = int(config.get('alarm_video_overlay_level', 2))
     font_scale = float(config.get('font_scale', 0.4))
     font_thickness = int(config.get('font_thickness', 1))
+    margin_ratio = float(config.get('margin_ratio', 0.02))  # 添加边距比例配置
 
     if not os.path.exists(alarm_dir):
         os.makedirs(alarm_dir)
@@ -41,7 +42,8 @@ def detect_local_video(video_path, config):
         confidence=confidence,
         device=device,
         font_scale=font_scale,
-        font_thickness=font_thickness
+        font_thickness=font_thickness,
+        margin_ratio=margin_ratio  # 传入边距比例
     )
 
     # 打开视频文件
