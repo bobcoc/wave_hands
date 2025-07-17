@@ -6,7 +6,7 @@ from mediapipe_hand import mediapipe_detect_hands, analyze_hand_pose
 class HandDetector:
     """统一的手势识别类，使用YOLO检测手掌位置，然后用MediaPipe或YOLO提取关键点"""
     
-    def __init__(self, detector='mediapipe', weights='weight/best.pt', confidence=0.2, 
+    def __init__(self, detector='mediapipe', weights='weight/best.pt', confidence=0.5, 
                  device='cpu', font_scale=1.2, font_thickness=2):
         """
         初始化手势识别器

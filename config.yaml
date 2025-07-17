@@ -7,8 +7,9 @@ device: cpu
 alarm_dir: alarms
 alarm_classes: [0, 1]  # 0: wave, 1: nowave
 alarm_duration: 3  # 秒
+alarm_frame_threshold: 30  # 触发报警的帧数阈值
 idle_detect_interval: 20  # 空闲检测间隔，单位帧
-cooldown_seconds: 120  # 报警冷却时长，单位秒
+cooldown_seconds: 180  # 报警冷却时长，单位秒
 # 错误处理设置
 skip_frame_on_error: true  # 错误时跳过帧
 max_error_count: 3  # 最大连续错误数
