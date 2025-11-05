@@ -3,7 +3,7 @@ input_video: C:\c\wave_hands\ss.mov
 output_video: output.mp4
 confidence: 0.25
 names: ['wave', 'nowave']
-device: cpu
+device: cuda
 alarm_dir: alarms
 alarm_classes: [0, 1]  # 0: wave, 1: nowave
 alarm_duration: 3  # 秒
@@ -75,6 +75,8 @@ streams:
     url: rtsp://admin:HuaWei@12345@10.0.14.34:554/LiveMedia/ch1/Media1
   - name: A405
     url: rtsp://admin:HuaWei@12345@10.0.14.35:554/LiveMedia/ch1/Media1
+  - name: B606
+    url: rtsp://admin:HuaWei@12345@10.0.14.77:554/LiveMedia/ch1/Media1    
 wechat_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=87522809-0d28-4783-a776-e94526349d27"
 # 新增：本地视频检测参数
 video_file: /Users/liushuming/projects/cc/vv/_A201_001_2025-07-08-11-20-31_2025-07-08-11-28-55.mp4 # 如需检测本地视频，填写此路径，否则留空
