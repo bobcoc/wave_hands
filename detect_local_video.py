@@ -3,12 +3,25 @@ import yaml
 import os
 import sys
 import time
+import glob
 from hand_detector import HandDetector
 
 def load_config(config_path='config.yaml'):
     """读取配置文件"""
     with open(config_path, 'r', encoding='utf-8') as f:
         return yaml.safe_load(f)
+
+def get_video_files(directory):
+    """递归搜索目录中的视频文件"""
+    video_extensions = ['*.mp4', '*.avi', '*.mov', '*.mkv', '*.wmv', '*.flv', '*.webm', '*.m4v']
+    video_files = []
+    
+    for ext in video_extensions:
+        # 递归搜索所有子目录
+        pattern = os.path.join(directory, '**', ext)
+        video_files.extend(glob.glob(pattern, recursive=True))
+    
+    return sorted(video_files)
 
 def detect_local_video(video_path, config):
     """
@@ -112,8 +125,8 @@ def detect_local_video(video_path, config):
             print(f"[{name}] [active] 帧 {global_frame_counter}/{total_frames} - palm帧数: {palm_frame_count}/{active_frame_counter}")
 
             # 检查是否满足报警条件
-            if palm_frame_count >= 10 or active_frame_counter >= alarm_buf_len:
-                if palm_frame_count >= 10:
+            if active_frame_counter >= alarm_buf_len:
+                if palm_frame_count >= 30:
                     # 输出报警视频片段
                     ts = time.strftime('%Y%m%d_%H%M%S')
                     alarm_path = os.path.join(alarm_dir, f'{name}_{ts}.mp4')
@@ -146,15 +159,36 @@ def detect_local_video(video_path, config):
 
 def main():
     config = load_config()
-    video_file = config.get('video_file', None)
     
-    if not video_file or not str(video_file).strip():
-        print('错误：配置文件中未找到video_file字段或为空')
-        print('请在config.yaml中添加video_file字段，例如:')
-        print('video_file: "path/to/your/video.mp4"')
+    # 指定要处理的视频目录
+    video_directory = "/Users/liushuming/projects/cc/vv"  
+    if not os.path.exists(video_directory):
+        print(f'错误：视频目录不存在: {video_directory}')
         sys.exit(1)
     
-    detect_local_video(video_file, config)
+    # 获取所有视频文件
+    video_files = get_video_files(video_directory)
+    
+    if not video_files:
+        print(f'在目录 {video_directory} 中未找到视频文件')
+        sys.exit(1)
+    
+    print(f'找到 {len(video_files)} 个视频文件:')
+    for i, video_file in enumerate(video_files, 1):
+        print(f'  {i}. {video_file}')
+    
+    print(f'\n开始处理视频文件...')
+    
+    # 逐一处理每个视频文件
+    for i, video_file in enumerate(video_files, 1):
+        print(f'\n[{i}/{len(video_files)}] 处理视频: {video_file}')
+        try:
+            detect_local_video(video_file, config)
+        except Exception as e:
+            print(f'处理视频 {video_file} 时出错: {e}')
+            continue
+    
+    print(f'\n所有视频处理完成！')
 
 if __name__ == '__main__':
     main() 

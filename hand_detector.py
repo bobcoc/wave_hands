@@ -7,7 +7,7 @@ class HandDetector:
     """统一的手势识别类，使用YOLO检测手掌位置，然后用MediaPipe或YOLO提取关键点"""
     
     def __init__(self, detector='mediapipe', weights='weight/best.pt', confidence=0.2, 
-                 device='cpu', font_scale=1.2, font_thickness=2, margin_ratio=0.02):
+                 device='cpu', font_scale=1.2, font_thickness=2, margin_ratio=0.2):
         """
         初始化手势识别器
         :param detector: 'mediapipe' 或 'yolo'，选择关键点检测器
@@ -141,7 +141,7 @@ class HandDetector:
                 conf_text = f"{conf:.2f}"
                 (cw, ch), _ = cv2.getTextSize(conf_text, cv2.FONT_HERSHEY_SIMPLEX, 
                                             self.font_scale, self.font_thickness)
-                y_mid = (y1 + y2) // 2
+                y_mid = (y1 + y2) // 2-ch-30
                 cv2.rectangle(output, (x2+5, y_mid-ch), (x2+5+cw+8, y_mid+ch+8), (0,0,0), -1)
                 cv2.putText(output, conf_text, (x2+7, y_mid+ch+2), cv2.FONT_HERSHEY_SIMPLEX, 
                            self.font_scale, (255,255,255), self.font_thickness)
