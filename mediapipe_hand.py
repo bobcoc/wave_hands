@@ -1,8 +1,47 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import os
 
 mp_hands = mp.solutions.hands
+
+# 进程级全局变量，每个进程独立的MediaPipe实例
+_process_mediapipe_hands = None
+_hands_call_count = 0
+_hands_reset_interval = 1000  # 每1000次调用重置一次，防止内存泄漏
+
+
+def get_mediapipe_hands_instance(max_num_hands=2, min_detection_confidence=0.5):
+    """
+    获取或创建当前进程的MediaPipe Hands实例（进程安全）
+    每个进程有独立的实例，避免每次调用都初始化
+    """
+    global _process_mediapipe_hands, _hands_call_count
+    
+    # 定期重置防止状态污染
+    if _hands_call_count >= _hands_reset_interval and _process_mediapipe_hands is not None:
+        try:
+            _process_mediapipe_hands.close()
+        except:
+            pass
+        _process_mediapipe_hands = None
+        _hands_call_count = 0
+        pid = os.getpid()
+        print(f"[PID:{pid}] MediaPipe实例已重置（达到{_hands_reset_interval}次调用）")
+    
+    # 创建新实例
+    if _process_mediapipe_hands is None:
+        pid = os.getpid()
+        print(f"[PID:{pid}] 创建 MediaPipe Hands 实例...")
+        _process_mediapipe_hands = mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=max_num_hands,
+            min_detection_confidence=min_detection_confidence
+        )
+        print(f"[PID:{pid}] MediaPipe Hands 实例创建完成")
+    
+    _hands_call_count += 1
+    return _process_mediapipe_hands
 
 class HandLandmark:
     """手部关键点的通用格式，用于统一YOLO和MediaPipe的输出"""
@@ -77,34 +116,32 @@ def mediapipe_detect_hands(frame, max_num_hands=2, min_detection_confidence=0.5)
     - handedness: str，"Left" or "Right"
     - is_palm_up: bool，True表示手掌朝上/前
     """
-    with mp_hands.Hands(
-        static_image_mode=False,
-        max_num_hands=max_num_hands,
-        min_detection_confidence=min_detection_confidence) as hands:
-        
-        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(image)
-        hands_info = []
-        
-        if results.multi_hand_landmarks and results.multi_handedness:
-            for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-                # 获取关键点坐标
-                keypoints = []
-                for lm in hand_landmarks.landmark:
-                    keypoints.append((int(lm.x * frame.shape[1]), 
-                                    int(lm.y * frame.shape[0]),
-                                    lm.z))
-                
-                # 获取手的分类（左/右手），需要翻转因为是镜像
-                hand_type = "Right" if handedness.classification[0].label == "Left" else "Left"
-                
-                # 分析手势
-                pose_info = analyze_hand_pose(keypoints, hand_type, with_z=True)
-                
-                hands_info.append({
-                    'keypoints': [(x, y) for x, y, _ in keypoints],
-                    'handedness': pose_info['handedness'],
-                    'is_palm_up': pose_info['is_palm_up']
-                })
-                
-        return hands_info 
+    # 复用MediaPipe实例（关键优化！避免每次都初始化）
+    hands = get_mediapipe_hands_instance(max_num_hands, min_detection_confidence)
+    
+    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = hands.process(image)
+    hands_info = []
+    
+    if results.multi_hand_landmarks and results.multi_handedness:
+        for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+            # 获取关键点坐标
+            keypoints = []
+            for lm in hand_landmarks.landmark:
+                keypoints.append((int(lm.x * frame.shape[1]), 
+                                int(lm.y * frame.shape[0]),
+                                lm.z))
+            
+            # 获取手的分类（左/右手），需要翻转因为是镜像
+            hand_type = "Right" if handedness.classification[0].label == "Left" else "Left"
+            
+            # 分析手势
+            pose_info = analyze_hand_pose(keypoints, hand_type, with_z=True)
+            
+            hands_info.append({
+                'keypoints': [(x, y) for x, y, _ in keypoints],
+                'handedness': pose_info['handedness'],
+                'is_palm_up': pose_info['is_palm_up']
+            })
+    
+    return hands_info 

@@ -3,13 +3,17 @@ import yaml
 import os
 import sys
 import time
-from collections import deque
 from multiprocessing import Process
 import multiprocessing
 from alarm_video_popup import show_alarm_video_popup
 import requests
 from urllib.parse import urlparse, parse_qs
 from hand_detector import HandDetector
+
+# 抑制MediaPipe和FFmpeg的警告日志
+os.environ['GLOG_minloglevel'] = '2'  # 0=INFO, 1=WARNING, 2=ERROR, 3=FATAL
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 抑制TensorFlow日志
+os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'loglevel;quiet'  # 抑制FFmpeg解码错误
 
 # 读取配置文件
 def load_config(config_path='config.yaml'):
@@ -203,16 +207,22 @@ def worker(stream_cfg, config):
     idle_frame_counter = 0
     alarm_buf_len = 75  # 3秒*25帧，后续可根据fps动态调整
     global_frame_counter = 0
+    print_interval = 10  # 每N帧打印一次，减少I/O开销
+    last_frame_time = time.time()  # 用于计算帧间隔
 
     while True:
         if state == 'cooldown':
             if time.time() < cooldown_until:
-                time.sleep(0.1)
+                # 持续清空缓冲区，避免积压旧帧
+                ret = cap.grab()
+                time.sleep(0.02)  # 小延迟防止CPU空转，同时保持缓冲区清理
                 continue
             else:
                 print(f"[{name}] 状态切换: cooldown -> idle (冷却结束)")
                 state = 'idle'
                 idle_frame_counter = 0
+                # 不需要额外清空，cooldown期间已持续清空了
+                print(f"[{name}] 缓冲区已清空，从实时帧开始检测")
 
         if not cap or not cap.isOpened():
             cap = create_video_capture_with_hwdecode(url, config, name)
@@ -233,16 +243,32 @@ def worker(stream_cfg, config):
             print(f"[{name}] 连接成功，fps={fps}, 分辨率={width}x{height}, 报警缓冲区长度={alarm_buf_len}")
 
         if state == 'idle':
-            # 跳帧检测
+            # 跳帧检测 - 优化：移除不必要的sleep
             for _ in range(idle_detect_interval-1):
                 cap.grab()
-                time.sleep(0.02)
+            
+            # 记录读取帧的时间
+            read_start = time.time()
             ret, frame = cap.read()
+            read_time = time.time() - read_start
+            
             if not ret:
                 print(f"[{name}] idle模式读取帧失败，重连")
                 cap.release()
                 cap = None
                 continue
+
+            # 计算帧间隔和估算缓冲区积压
+            current_time = time.time()
+            frame_interval = current_time - last_frame_time
+            last_frame_time = current_time
+            
+            # 估算缓冲区积压：如果帧间隔明显小于期望值，说明有积压
+            expected_interval = 1.0 / fps if fps > 0 else 0.04  # 期望帧间隔
+            if expected_interval > 0:
+                estimated_buffer_frames = max(0, int((read_time - expected_interval) * fps)) if fps > 0 else 0
+            else:
+                estimated_buffer_frames = 0
 
             # 处理当前帧
             output, hands_info = detector.process_frame(frame)
@@ -250,37 +276,71 @@ def worker(stream_cfg, config):
             palm_found = any(hand['is_palm_up'] for hand in hands_info)
             
             global_frame_counter += 1
-            print(f"[{name}] [idle] 已处理帧数: {global_frame_counter}")
-
+            # 优化：减少打印频率，但增加调试信息
+            if global_frame_counter % print_interval == 0:
+                buffer_info = f", 估算缓冲: ~{estimated_buffer_frames}帧" if estimated_buffer_frames > 5 else ""
+                print(f"[{name}] [idle] 已处理: {global_frame_counter}, 检测到手: {len(hands_info)}个, Palm: {palm_found}, 帧间隔: {frame_interval*1000:.1f}ms{buffer_info}")
+            
+            # 调试：检测到任何手时都打印详细信息
+            if len(hands_info) > 0:
+                for i, hand in enumerate(hands_info):
+                    print(f"[{name}] [DEBUG] 手#{i+1}: {hand['handedness']}, is_palm_up={hand['is_palm_up']}, conf={hand.get('confidence', 0):.2f}")
             if palm_found:
                 print(f"[{name}] 状态切换: idle -> active (检测到palm)")
                 state = 'active'
+                # 需要复制帧，因为要保存到缓冲区
                 active_buffer = [frame.copy()]
+                active_buffer_processed = [output.copy()]  # 保存已处理的帧
                 palm_frame_count = 1
                 active_frame_counter = 1
                 continue
 
         elif state == 'active':
+            # 记录读取帧的时间
+            read_start = time.time()
             ret, frame = cap.read()
+            read_time = time.time() - read_start
+            
             if not ret:
                 print(f"[{name}] active模式读取帧失败，重连")
                 cap.release()
                 cap = None
                 state = 'idle'
                 continue
+            
+            # 计算帧间隔和估算缓冲区积压
+            current_time = time.time()
+            frame_interval = current_time - last_frame_time
+            last_frame_time = current_time
+            
+            expected_interval = 1.0 / fps if fps > 0 else 0.04
+            if expected_interval > 0:
+                estimated_buffer_frames = max(0, int((read_time - expected_interval) * fps)) if fps > 0 else 0
+            else:
+                estimated_buffer_frames = 0
 
             # 处理当前帧
             output, hands_info = detector.process_frame(frame)
             # 只有检测到手掌（Palm）才算
             palm_in_this_frame = any(hand['is_palm_up'] for hand in hands_info)
             
+            # 调试：打印每帧的棅测结果
+            if len(hands_info) > 0:
+                for i, hand in enumerate(hands_info):
+                    print(f"[{name}] [active-DEBUG] 手#{i+1}: {hand['handedness']}, is_palm_up={hand['is_palm_up']}, conf={hand.get('confidence', 0):.2f}")
+            
             if palm_in_this_frame:
                 palm_frame_count += 1
 
+            # 必须复制帧，避免opencv缓冲区复用导致数据覆盖
             active_buffer.append(frame.copy())
+            active_buffer_processed.append(output.copy())  # 保存已处理的帧
             active_frame_counter += 1
             global_frame_counter += 1
-            print(f"[{name}] [active] 已处理帧数: {global_frame_counter}, palm帧数: {palm_frame_count}/{active_frame_counter}")
+            # 优化：减少打印频率
+            if active_frame_counter % print_interval == 0 or palm_in_this_frame:
+                buffer_info = f", 缓冲: ~{estimated_buffer_frames}帧" if estimated_buffer_frames > 5 else ""
+                print(f"[{name}] [active] 已处理: {global_frame_counter}, palm: {palm_frame_count}/{active_frame_counter}, 帧间隔: {frame_interval*1000:.1f}ms{buffer_info}")
 
             # 满alarm_frame_threshold帧立即报警，否则采满75帧后再判断
             if active_frame_counter >= alarm_buf_len:
@@ -289,20 +349,24 @@ def worker(stream_cfg, config):
                     alarm_path = os.path.join(alarm_dir, f'{name}_{ts}.mp4')
                     alarm_writer = cv2.VideoWriter(alarm_path, fourcc, fps if fps > 0 else 25, (width, height))
                     
-                    for idx, f in enumerate(active_buffer):
+                    # 优化：复用已处理的帧，避免重复检测
+                    for idx in range(len(active_buffer)):
                         if alarm_video_overlay_level > 0:
-                            # 使用detector处理每一帧
-                            processed_frame, _ = detector.process_frame(f)
-                            alarm_writer.write(processed_frame)
+                            # 使用已处理过的帧
+                            alarm_writer.write(active_buffer_processed[idx])
                         else:
-                            alarm_writer.write(f)
+                            # 使用原始帧
+                            alarm_writer.write(active_buffer[idx])
                     
                     alarm_writer.release()
                     print(f"[{name}] !!! 触发报警：3秒内palm帧数{palm_frame_count}>={alarm_frame_threshold}，报警片段: {alarm_path}")
                     
-                    # 弹出报警窗口
-                    multiprocessing.Process(target=show_alarm_video_popup, 
-                                         args=(alarm_path, f'ALARM-{name}')).start()
+                    # 弹出报警窗口（不需要设置daemon，因为父进程不是daemon）
+                    alarm_popup_process = multiprocessing.Process(
+                        target=show_alarm_video_popup, 
+                        args=(alarm_path, f'ALARM-{name}')
+                    )
+                    alarm_popup_process.start()
                     
                     # 微信报警推送
                     try:
@@ -325,9 +389,16 @@ def worker(stream_cfg, config):
                 else:
                     print(f"[{name}] 3秒内palm帧数{palm_frame_count}<{alarm_frame_threshold}，丢弃片段，回到idle")
                     state = 'idle'
+                    
+                    # 清空视频流缓冲区，避免处理积压的旧帧
+                    print(f"[{name}] 清空视频缓冲区...")
+                    for _ in range(50):  # 清空最多50帧的积压
+                        cap.grab()
+                    print(f"[{name}] 缓冲区已清空")
                 
                 # 重置状态
                 active_buffer = []
+                active_buffer_processed = []
                 palm_frame_count = 0
                 active_frame_counter = 0
                 continue
@@ -338,13 +409,37 @@ def main():
     if not streams:
         print('配置文件未找到streams字段或为空')
         sys.exit(1)
+    
     processes = []
     for stream_cfg in streams:
         p = Process(target=worker, args=(stream_cfg, config))
+        # 不设置为守护进程，通过 terminate/kill 手动清理
         p.start()
         processes.append(p)
-    for p in processes:
-        p.join()
+        print(f"[主进程] 启动进程处理: {stream_cfg.get('name')} (PID: {p.pid})")
+    
+    print(f"[主进程] 所有进程已启动，按Ctrl+C退出")
+    
+    try:
+        # 等待所有进程
+        for p in processes:
+            p.join()
+    except KeyboardInterrupt:
+        print("\n[主进程] 接收到键盘中断 (Ctrl+C)，正在停止所有进程...")
+        # 终止所有子进程
+        for p in processes:
+            if p.is_alive():
+                print(f"[主进程] 终止进程 PID: {p.pid}")
+                p.terminate()
+        
+        # 等待所有进程真正退出（最多等3秒）
+        for p in processes:
+            p.join(timeout=3)
+            if p.is_alive():
+                print(f"[主进程] 强制杀死进程 PID: {p.pid}")
+                p.kill()  # 强制杀死仍未退出的进程
+    
+    print("[主进程] 程序正常退出")
 
 if __name__ == '__main__':
     main() 

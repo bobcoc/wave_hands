@@ -7,8 +7,8 @@ device: cuda
 alarm_dir: alarms
 alarm_classes: [0, 1]  # 0: wave, 1: nowave
 alarm_duration: 3  # 秒
-alarm_frame_threshold: 30  # 触发报警的帧数阈值
-idle_detect_interval: 20  # 空闲检测间隔，单位帧
+alarm_frame_threshold: 20  # 触发报警的帧数阈值
+idle_detect_interval: 30  # 空闲检测间隔，单位帧
 cooldown_seconds: 180  # 报警冷却时长，单位秒
 # 错误处理设置
 skip_frame_on_error: true  # 错误时跳过帧
@@ -51,6 +51,26 @@ streams:
     url: rtsp://admin:HuaWei@12345@10.0.14.90:554/LiveMedia/ch1/Media1
   - name: A203
     url: rtsp://admin:HuaWei@12345@10.0.14.88:554/LiveMedia/ch1/Media1
+  - name: A309
+    url: rtsp://admin:HuaWei@12345@10.0.14.26:554/LiveMedia/ch1/Media1
+  - name: A310
+    url: rtsp://admin:HuaWei@12345@10.0.14.27:554/LiveMedia/ch1/Media1
+  - name: A311
+    url: rtsp://admin:HuaWei@12345@10.0.14.28:554/LiveMedia/ch1/Media1
+  - name: A312
+    url: rtsp://admin:HuaWei@12345@10.0.14.29:554/LiveMedia/ch1/Media1
+  - name: A313
+    url: rtsp://admin:HuaWei@12345@10.0.14.30:554/LiveMedia/ch1/Media1
+  - name: A210
+    url: rtsp://admin:HuaWei@12345@10.0.14.16:554/LiveMedia/ch1/Media1
+  - name: A211
+    url: rtsp://admin:HuaWei@12345@10.0.14.17:554/LiveMedia/ch1/Media1
+  - name: A212
+    url: rtsp://admin:HuaWei@12345@10.0.14.18:554/LiveMedia/ch1/Media1
+  - name: A213
+    url: rtsp://admin:HuaWei@12345@10.0.14.19:554/LiveMedia/ch1/Media1
+  - name: A214
+    url: rtsp://admin:HuaWei@12345@10.0.14.20:554/LiveMedia/ch1/Media1
   - name: A201
     url: rtsp://admin:HuaWei@12345@10.0.14.86:554/LiveMedia/ch1/Media1
   - name: A202
@@ -65,6 +85,10 @@ streams:
     url: rtsp://admin:HuaWei@12345@10.0.14.24:554/LiveMedia/ch1/Media1
   - name: A305
     url: rtsp://admin:HuaWei@12345@10.0.14.25:554/LiveMedia/ch1/Media1
+  - name: A501
+    url: rtsp://admin:HuaWei@12345@10.0.14.41:554/LiveMedia/ch1/Media1
+  - name: A502
+    url: rtsp://admin:HuaWei@12345@10.0.14.42:554/LiveMedia/ch1/Media1
   - name: A401
     url: rtsp://admin:HuaWei@12345@10.0.14.31:554/LiveMedia/ch1/Media1
   - name: A402
@@ -75,8 +99,52 @@ streams:
     url: rtsp://admin:HuaWei@12345@10.0.14.34:554/LiveMedia/ch1/Media1
   - name: A405
     url: rtsp://admin:HuaWei@12345@10.0.14.35:554/LiveMedia/ch1/Media1
+  - name: A509
+    url: rtsp://admin:HuaWei@12345@10.0.14.46:554/LiveMedia/ch1/Media1
+  - name: A510
+    url: rtsp://admin:HuaWei@12345@10.0.14.47:554/LiveMedia/ch1/Media1
+  - name: A511
+    url: rtsp://admin:HuaWei@12345@10.0.14.48:554/LiveMedia/ch1/Media1
+  - name: A512
+    url: rtsp://admin:HuaWei@12345@10.0.14.49:554/LiveMedia/ch1/Media1
+  - name: A513
+    url: rtsp://admin:HuaWei@12345@10.0.14.50:554/LiveMedia/ch1/Media1
+  - name: A409
+    url: rtsp://admin:HuaWei@12345@10.0.14.36:554/LiveMedia/ch1/Media1
+  - name: A410
+    url: rtsp://admin:HuaWei@12345@10.0.14.37:554/LiveMedia/ch1/Media1
+  - name: A411
+    url: rtsp://admin:HuaWei@12345@10.0.14.38:554/LiveMedia/ch1/Media1
+  - name: A412
+    url: rtsp://admin:HuaWei@12345@10.0.14.39:554/LiveMedia/ch1/Media1
+  - name: A413
+    url: rtsp://admin:HuaWei@12345@10.0.14.40:554/LiveMedia/ch1/Media1
+  - name: A503
+    url: rtsp://admin:HuaWei@12345@10.0.14.43:554/LiveMedia/ch1/Media1
+  - name: A505
+    url: rtsp://admin:HuaWei@12345@10.0.14.45:554/LiveMedia/ch1/Media1
+  - name: A601
+    url: rtsp://admin:HuaWei@12345@10.0.14.51:554/LiveMedia/ch1/Media1
+  - name: A602
+    url: rtsp://admin:HuaWei@12345@10.0.14.52:554/LiveMedia/ch1/Media1
+  - name: A603
+    url: rtsp://admin:HuaWei@12345@10.0.14.53:554/LiveMedia/ch1/Media1
+  - name: A604
+    url: rtsp://admin:HuaWei@12345@10.0.14.54:554/LiveMedia/ch1/Media1
+  - name: A605
+    url: rtsp://admin:HuaWei@12345@10.0.14.55:554/LiveMedia/ch1/Media1
+  - name: A609
+    url: rtsp://admin:HuaWei@12345@10.0.14.56:554/LiveMedia/ch1/Media1
+  - name: A610
+    url: rtsp://admin:HuaWei@12345@10.0.14.57:554/LiveMedia/ch1/Media1
+  - name: A611
+    url: rtsp://admin:HuaWei@12345@10.0.14.58:554/LiveMedia/ch1/Media1
+  - name: A612
+    url: rtsp://admin:HuaWei@12345@10.0.14.59:554/LiveMedia/ch1/Media1
+  - name: A613
+    url: rtsp://admin:HuaWei@12345@10.0.14.60:554/LiveMedia/ch1/Media1
   - name: B606
     url: rtsp://admin:HuaWei@12345@10.0.14.77:554/LiveMedia/ch1/Media1    
-wechat_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=87522809-0d28-4783-a776-e94526349d27"
+wechat_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=2a402c17-0ce8-4cd3-8be8-a2387256a8ec"
 # 新增：本地视频检测参数
 video_file: /Users/liushuming/projects/cc/vv/_A201_001_2025-07-08-11-20-31_2025-07-08-11-28-55.mp4 # 如需检测本地视频，填写此路径，否则留空
