@@ -208,7 +208,7 @@ def worker(stream_cfg, config):
     global_frame_counter = 0
     print_interval = 10  # 每N帧打印一次，减少I/O开销
     last_frame_time = time.time()  # 用于计算帧间隔
-    last_idle_detect_time = 0  # 上次idle检测的时间戳
+    last_idle_detect_time = time.time()  # 上次idle检测的时间戳（初始化为当前时间）
 
     while True:
         if state == 'cooldown':
@@ -250,37 +250,12 @@ def worker(stream_cfg, config):
                 time.sleep(0.1)  # 休眠100ms，避免频繁循环
                 continue
             
-            # 到达检测时间，使用更可靠的方式获取最新帧
-            # 方法：利用OpenCV的CAP_PROP_POS_FRAMES和缓冲区设置
-            # 先快速清空缓冲区（使用grab()比read()更快）
-            print(f"[{name}] [idle] 开始清空缓冲区获取最新帧...")
+            # 到达检测时间，直接读取帧进行检测
+            # buffer_size=10很小(仅0.4秒延迟)，无需清空缓冲区
             
-            # 策略：连续grab直到接近实时（通过时间判断而非帧数估算）
-            clear_start = time.time()
-            grab_count = 0
-            # 持续抓帧直到抓帧间隔接近实时帧间隔（说明缓冲区已清空）
-            expected_frame_interval = 1.0 / fps if fps > 0 else 0.04  # 期望的单帧时间
+            # 计算距离上次检测的实际时间间隔（在更新时间戳之前计算）
+            actual_interval = current_time - last_idle_detect_time
             
-            while True:
-                grab_time_start = time.time()
-                if not cap.grab():
-                    print(f"[{name}] [idle] 抓帧失败，缓冲区可能已空")
-                    time.sleep(0.1)  # 稍等0.1秒，防止后续去抓帧时没有数据可抓
-                    break
-                grab_time = time.time() - grab_time_start
-                grab_count += 1
-                
-                # 如果抓帧时间接近或超过单帧时间，说明已经接近实时了
-                if grab_time >= expected_frame_interval * 0.8:  # 80%阈值，留有余量
-                    print(f"[{name}] [idle] 已接近实时（抓帧耗时{grab_time*1000:.1f}ms >= {expected_frame_interval*0.8*1000:.1f}ms），清空了{grab_count}帧")
-                    break
-                
-                # 防止无限循环，最多清空5秒的帧
-                if time.time() - clear_start > 5.0:
-                    print(f"[{name}] [idle] 清空超时（5秒），已清空{grab_count}帧")
-                    break
-            
-            # 读取最新帧
             read_start = time.time()
             ret, frame = cap.read()
             read_time = time.time() - read_start
@@ -291,10 +266,8 @@ def worker(stream_cfg, config):
                 cap.release()
                 cap = None
                 continue
-
-            # 计算距离上次检测的实际时间间隔
-            actual_interval = current_time - last_frame_time
-            last_frame_time = current_time
+            
+            last_frame_time = current_time  # 更新帧时间（供active状态使用）
             
             # 处理当前帧
             output, hands_info = detector.process_frame(frame)
