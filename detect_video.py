@@ -179,7 +179,7 @@ def worker(stream_cfg, config):
     alarm_dir = config.get('alarm_dir', 'alarms')
     alarm_duration = int(config.get('alarm_duration', 3))
     cooldown_seconds = int(config.get('cooldown_seconds', 60))
-    idle_detect_interval = int(config.get('idle_detect_interval', 5))  # idle下每N帧检测一次
+    idle_detect_interval = float(config.get('idle_detect_interval', 3.0))  # idle下每N秒检测一次
     alarm_video_overlay_level = int(config.get('alarm_video_overlay_level', 2))
     font_scale = float(config.get('font_scale', 0.4))
     font_thickness = int(config.get('font_thickness', 1))
@@ -201,14 +201,14 @@ def worker(stream_cfg, config):
     state = 'idle'  # idle, active, cooldown
     cooldown_until = 0
     fourcc = cv2.VideoWriter.fourcc(*'mp4v')
-    print(f"[{name}] 进程启动，流地址: {url}")
+    print(f"[{name}] 进程启动,流地址: {url}")
 
     cap = None
-    idle_frame_counter = 0
     alarm_buf_len = 75  # 3秒*25帧，后续可根据fps动态调整
     global_frame_counter = 0
     print_interval = 10  # 每N帧打印一次，减少I/O开销
     last_frame_time = time.time()  # 用于计算帧间隔
+    last_idle_detect_time = 0  # 上次idle检测的时间戳
 
     while True:
         if state == 'cooldown':
@@ -220,7 +220,6 @@ def worker(stream_cfg, config):
             else:
                 print(f"[{name}] 状态切换: cooldown -> idle (冷却结束)")
                 state = 'idle'
-                idle_frame_counter = 0
                 # 不需要额外清空，cooldown期间已持续清空了
                 print(f"[{name}] 缓冲区已清空，从实时帧开始检测")
 
@@ -243,14 +242,49 @@ def worker(stream_cfg, config):
             print(f"[{name}] 连接成功，fps={fps}, 分辨率={width}x{height}, 报警缓冲区长度={alarm_buf_len}")
 
         if state == 'idle':
-            # 跳帧检测 - 优化：移除不必要的sleep
-            for _ in range(idle_detect_interval-1):
-                cap.grab()
+            current_time = time.time()
             
-            # 记录读取帧的时间
+            # 检查是否到达检测间隔时间
+            if current_time - last_idle_detect_time < idle_detect_interval:
+                # 未到检测时间，直接休眠后继续
+                time.sleep(0.1)  # 休眠100ms，避免频繁循环
+                continue
+            
+            # 到达检测时间，使用更可靠的方式获取最新帧
+            # 方法：利用OpenCV的CAP_PROP_POS_FRAMES和缓冲区设置
+            # 先快速清空缓冲区（使用grab()比read()更快）
+            print(f"[{name}] [idle] 开始清空缓冲区获取最新帧...")
+            
+            # 策略：连续grab直到接近实时（通过时间判断而非帧数估算）
+            clear_start = time.time()
+            grab_count = 0
+            # 持续抓帧直到抓帧间隔接近实时帧间隔（说明缓冲区已清空）
+            expected_frame_interval = 1.0 / fps if fps > 0 else 0.04  # 期望的单帧时间
+            
+            while True:
+                grab_time_start = time.time()
+                if not cap.grab():
+                    print(f"[{name}] [idle] 抓帧失败，缓冲区可能已空")
+                    time.sleep(0.1)  # 稍等0.1秒，防止后续去抓帧时没有数据可抓
+                    break
+                grab_time = time.time() - grab_time_start
+                grab_count += 1
+                
+                # 如果抓帧时间接近或超过单帧时间，说明已经接近实时了
+                if grab_time >= expected_frame_interval * 0.8:  # 80%阈值，留有余量
+                    print(f"[{name}] [idle] 已接近实时（抓帧耗时{grab_time*1000:.1f}ms >= {expected_frame_interval*0.8*1000:.1f}ms），清空了{grab_count}帧")
+                    break
+                
+                # 防止无限循环，最多清空5秒的帧
+                if time.time() - clear_start > 5.0:
+                    print(f"[{name}] [idle] 清空超时（5秒），已清空{grab_count}帧")
+                    break
+            
+            # 读取最新帧
             read_start = time.time()
             ret, frame = cap.read()
             read_time = time.time() - read_start
+            last_idle_detect_time = current_time  # 更新检测时间戳
             
             if not ret:
                 print(f"[{name}] idle模式读取帧失败，重连")
@@ -258,28 +292,18 @@ def worker(stream_cfg, config):
                 cap = None
                 continue
 
-            # 计算帧间隔和估算缓冲区积压
-            current_time = time.time()
-            frame_interval = current_time - last_frame_time
+            # 计算距离上次检测的实际时间间隔
+            actual_interval = current_time - last_frame_time
             last_frame_time = current_time
             
-            # 估算缓冲区积压：如果帧间隔明显小于期望值，说明有积压
-            expected_interval = 1.0 / fps if fps > 0 else 0.04  # 期望帧间隔
-            if expected_interval > 0:
-                estimated_buffer_frames = max(0, int((read_time - expected_interval) * fps)) if fps > 0 else 0
-            else:
-                estimated_buffer_frames = 0
-
             # 处理当前帧
             output, hands_info = detector.process_frame(frame)
             # 只有检测到手掌（Palm）才算
             palm_found = any(hand['is_palm_up'] for hand in hands_info)
             
             global_frame_counter += 1
-            # 优化：减少打印频率，但增加调试信息
-            if global_frame_counter % print_interval == 0:
-                buffer_info = f", 估算缓冲: ~{estimated_buffer_frames}帧" if estimated_buffer_frames > 5 else ""
-                print(f"[{name}] [idle] 已处理: {global_frame_counter}, 检测到手: {len(hands_info)}个, Palm: {palm_found}, 帧间隔: {frame_interval*1000:.1f}ms{buffer_info}")
+            # 每次检测都打印信息（因为检测频率已经降低）
+            print(f"[{name}] [idle] 检测#{global_frame_counter}, 检测间隔: {actual_interval:.1f}s, 检测到手: {len(hands_info)}个, Palm: {palm_found}, 读取耗时: {read_time*1000:.1f}ms")
             
             # 调试：检测到任何手时都打印详细信息
             if len(hands_info) > 0:

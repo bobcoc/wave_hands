@@ -1,0 +1,10 @@
+ultralytics
+opencv-python>=4.8.0
+pyyaml
+types-PyYAML
+numpy>=1.21.0
+matplotlib>=3.5.0
+pathlib2>=2.3.0
+PyQt5
+requests
+mediapipe 

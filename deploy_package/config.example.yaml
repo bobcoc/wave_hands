@@ -1,0 +1,80 @@
+# 视频流检测系统配置文件（示例）
+# 将此文件重命名为 config.yaml 并根据实际情况修改
+
+# ==================== 模型配置 ====================
+weights: weight/best.pt              # YOLO模型权重路径
+confidence: 0.25                     # 检测置信度阈值 (0.0-1.0)
+device: cuda                         # 使用设备: cuda 或 cpu
+
+# ==================== 报警配置 ====================
+alarm_dir: alarms                    # 报警视频保存目录
+alarm_duration: 3                    # 报警片段时长（秒）
+alarm_frame_threshold: 20            # 触发报警所需检测到的帧数（3秒内）
+cooldown_seconds: 180                # 报警后冷却时间（秒），防止重复报警
+alarm_video_overlay_level: 2         # 报警视频叠加等级: 0=无, 1=边框, 2=边框+关键点
+
+# ==================== 检测优化 ====================
+idle_detect_interval: 30             # 空闲模式下每N帧检测一次（跳帧间隔）
+font_scale: 0.4                      # 显示文字大小
+font_thickness: 1                    # 显示文字粗细
+
+# ==================== 视频解码配置 ====================
+video_decode:
+  use_hardware_decode: true          # 是否使用硬件解码（提升性能）
+  buffer_size: 10                    # 缓冲区大小
+  decode_backend: "ffmpeg"           # 解码后端: ffmpeg
+  fallback_to_software: true         # 硬件解码失败时回退到软件解码
+  rtsp_transport: "tcp"              # RTSP传输协议: tcp (更稳定) 或 udp (延迟更低)
+  
+  # 容错设置
+  skip_frame_on_error: true          # 解码错误时跳过该帧
+  max_error_count: 10                # 最大连续错误数
+  error_recovery_delay: 0.5          # 错误恢复延迟（秒）
+  
+  # 自动重连设置
+  auto_reconnect: true               # 启用自动重连
+  reconnect_interval: 60             # 定期重连间隔（秒）
+  max_decode_errors: 50              # 最大解码错误数后强制重连
+  error_check_window: 30             # 错误统计窗口（秒）
+
+# ==================== 视频流配置 ====================
+# 配置需要监控的视频流
+# 支持 RTSP、RTMP、HTTP 等协议
+
+streams:
+  # 示例1: RTSP摄像头
+  - name: 教室A101
+    url: rtsp://admin:password@192.168.1.100:554/LiveMedia/ch1/Media1
+  
+  # 示例2: 多个摄像头
+  - name: 教室A102
+    url: rtsp://admin:password@192.168.1.101:554/LiveMedia/ch1/Media1
+  
+  # 示例3: 本地视频文件（用于测试）
+  # - name: 测试视频
+  #   url: /path/to/test_video.mp4
+
+  # 添加更多视频流...
+  # - name: 教室A103
+  #   url: rtsp://admin:password@192.168.1.102:554/LiveMedia/ch1/Media1
+
+# ==================== 企业微信报警推送（可选）====================
+# 配置企业微信群机器人的 Webhook URL
+# 获取方式：
+#   1. 在企业微信群中添加机器人
+#   2. 复制机器人的 Webhook URL
+#   3. 粘贴到下方
+
+wechat_webhook_url: ""
+# 示例: wechat_webhook_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY_HERE"
+
+# ==================== 高级配置（通常无需修改）====================
+names: ['wave', 'nowave']            # 类别名称
+alarm_classes: [0, 1]                # 报警类别ID
+teacher_height_threshold: 700        # 教师过滤阈值（高度像素）
+min_palm_size: 150                   # 最小手掌检测框尺寸（像素）
+
+# 错误处理
+skip_frame_on_error: true            # 错误时跳过帧
+max_error_count: 3                   # 最大连续错误数
+error_recovery_delay: 1              # 错误恢复延迟（秒）
