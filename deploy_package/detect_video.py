@@ -184,6 +184,7 @@ def worker(stream_cfg, config):
     font_scale = float(config.get('font_scale', 0.4))
     font_thickness = int(config.get('font_thickness', 1))
     alarm_frame_threshold = int(config.get('alarm_frame_threshold', 10))  # 触发报警的帧数阈值
+    enable_alarm_popup = config.get('enable_alarm_popup', False)  # 是否启用报警弹窗，默认关闭
 
     if not os.path.exists(alarm_dir):
         os.makedirs(alarm_dir)
@@ -390,12 +391,16 @@ def worker(stream_cfg, config):
                     alarm_writer.release()
                     print(f"[{name}] !!! 触发报警：3秒内palm帧数{palm_frame_count}>={alarm_frame_threshold}，报警片段: {alarm_path}")
                     
-                    # 弹出报警窗口（不需要设置daemon，因为父进程不是daemon）
-                    alarm_popup_process = multiprocessing.Process(
-                        target=show_alarm_video_popup, 
-                        args=(alarm_path, f'ALARM-{name}')
-                    )
-                    alarm_popup_process.start()
+                    # 弹出报警窗口（可配置）
+                    if enable_alarm_popup:
+                        alarm_popup_process = multiprocessing.Process(
+                            target=show_alarm_video_popup, 
+                            args=(alarm_path, f'ALARM-{name}')
+                        )
+                        alarm_popup_process.start()
+                        print(f"[{name}] 已启动报警弹窗")
+                    else:
+                        print(f"[{name}] 报警弹窗已禁用（enable_alarm_popup=False）")
                     
                     # 微信报警推送
                     try:

@@ -14,6 +14,7 @@ cooldown_seconds: 180  # 报警冷却时长，单位秒
 skip_frame_on_error: true  # 错误时跳过帧
 max_error_count: 3  # 最大连续错误数
 error_recovery_delay: 1  # 错误恢复延迟(秒)
+enable_alarm_popup: false  # 设置为true启用弹窗，false禁用弹窗
 # 视频解码设置
 video_decode:
   use_hardware_decode: true
