@@ -66,7 +66,7 @@ def create_video_capture_with_hwdecode(url, config, name):
                 cap = cv2.VideoCapture(modified_url)
             
             if cap.isOpened():
-                # 设置缓冲区大小
+                # 设置缓冲区大小（注意：对RTSP流通常无效，需要主动清空缓冲区）
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, buffer_size)
                 # 尝试设置硬件解码相关参数
                 try:
@@ -246,16 +246,18 @@ def worker(stream_cfg, config):
             
             # 检查是否到达检测间隔时间
             if current_time - last_idle_detect_time < idle_detect_interval:
-                # 未到检测时间，直接休眠后继续
-                time.sleep(0.1)  # 休眠100ms，避免频繁循环
+                cap.grab()
                 continue
             
-            # 到达检测时间，直接读取帧进行检测
-            # buffer_size=10很小(仅0.4秒延迟)，无需清空缓冲区
+            # 到达检测时间，先清空缓冲区获取最新帧
+            # 虽然buffer_size=10，但OpenCV可能会积压更多帧，需要主动清空
             
             # 计算距离上次检测的实际时间间隔（在更新时间戳之前计算）
             actual_interval = current_time - last_idle_detect_time
             
+
+            
+            # 读取当前最新帧
             read_start = time.time()
             ret, frame = cap.read()
             read_time = time.time() - read_start
@@ -270,11 +272,41 @@ def worker(stream_cfg, config):
             last_frame_time = current_time  # 更新帧时间（供active状态使用）
             
             # 处理当前帧
-            output, hands_info = detector.process_frame(frame)
+            try:
+                output, hands_info = detector.process_frame(frame)
+            except Exception as e:
+                print(f"[{name}] [ERROR] 检测器处理帧时出错: {e}")
+                import traceback
+                traceback.print_exc()
+                # 出错时跳过这一帧，继续下一次检测
+                continue
+                
             # 只有检测到手掌（Palm）才算
             palm_found = any(hand['is_palm_up'] for hand in hands_info)
             
             global_frame_counter += 1
+            
+            # 每次检测都保存一张图片（用于调试查看是哪个教室）
+            '''
+            print(f"[{name}] [DEBUG] global_frame_counter={global_frame_counter}")
+            if global_frame_counter <= 55:  # 只保存前55次检测的图片
+                try:
+                    debug_image_dir = os.path.join(alarm_dir, 'debug_frames')
+                    print(f"[{name}] [DEBUG] debug_image_dir={debug_image_dir}")
+                    if not os.path.exists(debug_image_dir):
+                        os.makedirs(debug_image_dir)
+                        print(f"[{name}] [DEBUG] 创建目录: {debug_image_dir}")
+                    debug_image_path = os.path.join(debug_image_dir, f'{name}_frame_{global_frame_counter}.jpg')
+                    print(f"[{name}] [DEBUG] 即将保存图片到: {debug_image_path}")
+                    cv2.imwrite(debug_image_path, frame)
+                    print(f"[{name}] [DEBUG] 已保存调试图片: {debug_image_path}")
+                except Exception as e:
+                    print(f"[{name}] [ERROR] 保存调试图片失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print(f"[{name}] [DEBUG] 跳过保存，global_frame_counter({global_frame_counter}) > 55")
+            '''
             # 每次检测都打印信息（因为检测频率已经降低）
             print(f"[{name}] [idle] 检测#{global_frame_counter}, 检测间隔: {actual_interval:.1f}s, 检测到手: {len(hands_info)}个, Palm: {palm_found}, 读取耗时: {read_time*1000:.1f}ms")
             

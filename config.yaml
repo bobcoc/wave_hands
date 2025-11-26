@@ -3,7 +3,7 @@ input_video: C:\c\wave_hands\ss.mov
 output_video: output.mp4
 confidence: 0.25
 names: ['wave', 'nowave']
-device: cuda
+device: cpu
 alarm_dir: alarms
 alarm_classes: [0, 1]  # 0: wave, 1: nowave
 alarm_duration: 3  # 秒
