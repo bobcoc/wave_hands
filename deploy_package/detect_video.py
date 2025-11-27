@@ -76,7 +76,7 @@ def create_video_capture_with_hwdecode(url, config, name):
                     cap.set(cv2.CAP_PROP_FPS, 25)  # 限制FPS减少缓冲压力
                     # 设置RTSP传输协议为TCP（更稳定但延迟更高）
                     cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 30000)  # 30秒超时
-                    cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 30000)  # 30秒读取超时
+                    cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000)  # 1秒读取超时
                 except Exception as e:
                     print(f"[{name}] 硬件解码参数设置警告: {e}")
                 
@@ -210,7 +210,7 @@ def worker(stream_cfg, config):
     print_interval = 10  # 每N帧打印一次，减少I/O开销
     last_frame_time = time.time()  # 用于计算帧间隔
     last_idle_detect_time = time.time()  # 上次idle检测的时间戳（初始化为当前时间）
-
+    ccc = 0
     while True:
         if state == 'cooldown':
             if time.time() < cooldown_until:
@@ -240,24 +240,23 @@ def worker(stream_cfg, config):
             else:
                 alarm_buf_len = 75
             print(f"[{name}] 连接成功，fps={fps}, 分辨率={width}x{height}, 报警缓冲区长度={alarm_buf_len}")
-
         if state == 'idle':
             current_time = time.time()
             
             # 检查是否到达检测间隔时间
             if current_time - last_idle_detect_time < idle_detect_interval:
-                ret, frame = cap.read()
-                if not ret:
-                    time.sleep(0.01)  # 如果读不到，说明缓存区已空，等0.01秒让视频流更新
+                cap.grab()
+                ccc = ccc + 1
                 continue
-            
+            print(ccc)
+            ccc = 0
             # 计算距离上次检测的实际时间间隔（在更新时间戳之前计算）
             actual_interval = current_time - last_idle_detect_time
+            
             # 读取当前最新帧
             read_start = time.time()
             ret, frame = cap.read()
             read_time = time.time() - read_start
-            last_idle_detect_time = current_time  # 更新检测时间戳
             
             if not ret:
                 print(f"[{name}] idle模式读取帧失败，重连")
@@ -265,9 +264,8 @@ def worker(stream_cfg, config):
                 cap = None
                 continue
             
-            last_frame_time = current_time  # 更新帧时间（供active状态使用）
-            
             # 处理当前帧
+            process_start = time.time()
             try:
                 output, hands_info = detector.process_frame(frame)
             except Exception as e:
@@ -276,6 +274,11 @@ def worker(stream_cfg, config):
                 traceback.print_exc()
                 # 出错时跳过这一帧，继续下一次检测
                 continue
+            process_time = time.time() - process_start
+            
+            # 在处理完成后再更新时间戳，确保包含读取和处理的耗时
+            last_idle_detect_time = time.time()
+            last_frame_time = last_idle_detect_time  # 更新帧时间（供active状态使用）
                 
             # 只有检测到手掌（Palm）才算
             palm_found = any(hand['is_palm_up'] for hand in hands_info)
@@ -304,7 +307,7 @@ def worker(stream_cfg, config):
                 print(f"[{name}] [DEBUG] 跳过保存，global_frame_counter({global_frame_counter}) > 55")
             '''
             # 每次检测都打印信息（因为检测频率已经降低）
-            print(f"[{name}] [idle] 检测#{global_frame_counter}, 检测间隔: {actual_interval:.1f}s, 检测到手: {len(hands_info)}个, Palm: {palm_found}, 读取耗时: {read_time*1000:.1f}ms")
+            print(f"[{name}] [idle] 检测#{global_frame_counter}, 检测间隔: {actual_interval:.1f}s, 检测到手: {len(hands_info)}个, Palm: {palm_found}, 读取耗时: {read_time*1000:.1f}ms, 处理耗时: {process_time*1000:.1f}ms")
             
             # 调试：检测到任何手时都打印详细信息
             if len(hands_info) > 0:
