@@ -254,8 +254,8 @@ def worker(stream_cfg, config):
                     safety_margin = 5  # 保留5帧的安全边际
                     if ccc >= expected_frames - safety_margin:
                         # 已经接近缓冲区底部，休眠等待新帧
-                        time.sleep(0.02)  # 休眠20ms，约半帧时间
-                        ccc = ccc + 1
+                        time.sleep(0.025)  # 休眠40ms，约1帧时间
+                        
                 
                 # 正常grab清空缓冲区
                 ret = cap.grab()
@@ -268,7 +268,7 @@ def worker(stream_cfg, config):
                     continue
                 ccc = ccc + 1
                 continue
-            print(ccc)
+            # print(ccc)
             grab_count = ccc  # 记录grab次数用于调试
             ccc = 0
             # 计算距离上次检测的实际时间间隔（在更新时间戳之前计算）
@@ -305,9 +305,9 @@ def worker(stream_cfg, config):
             palm_found = any(hand['is_palm_up'] for hand in hands_info)
             
             global_frame_counter += 1
-            
-            # 在第150次检测时保存一张图片，用于验证实时性
-            if global_frame_counter == 150:
+            '''
+            # 在第1250次检测时保存一张图片，用于验证实时性
+            if global_frame_counter == 1250:
                 try:
                     debug_image_dir = os.path.join(alarm_dir, 'realtime_check')
                     if not os.path.exists(debug_image_dir):
@@ -320,7 +320,7 @@ def worker(stream_cfg, config):
                     print(f"[{name}] [实时性验证] 请对比图片中监控时间与文件名时间是否一致")
                 except Exception as e:
                     print(f"[{name}] [ERROR] 保存实时性验证图片失败: {e}")
-            
+            '''
             # 每次检测都保存一张图片（用于调试查看是哪个教室）
             '''
             print(f"[{name}] [DEBUG] global_frame_counter={global_frame_counter}")
