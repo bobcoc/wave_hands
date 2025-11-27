@@ -244,11 +244,32 @@ def worker(stream_cfg, config):
             current_time = time.time()
             
             # 检查是否到达检测间隔时间
-            if current_time - last_idle_detect_time < idle_detect_interval:
-                cap.grab()
+            time_since_last = current_time - last_idle_detect_time
+            if time_since_last < idle_detect_interval:
+                # 预测性避免grab卡住：估算理论上应该积累的帧数
+                if fps > 0:
+                    # 理论帧数 = 已经过去的时间 * 帧率
+                    expected_frames = int(time_since_last * fps)
+                    # 保留一些安全边际，当grab次数接近理论帧数时停止
+                    safety_margin = 5  # 保留5帧的安全边际
+                    if ccc >= expected_frames - safety_margin:
+                        # 已经接近缓冲区底部，休眠等待新帧
+                        time.sleep(0.02)  # 休眠20ms，约半帧时间
+                        ccc = ccc + 1
+                
+                # 正常grab清空缓冲区
+                ret = cap.grab()
+                if not ret:
+                    # grab失败说明流有问题，直接重连
+                    print(f"[{name}] grab失败，流可能中断，重连")
+                    cap.release()
+                    cap = None
+                    ccc = 0
+                    continue
                 ccc = ccc + 1
                 continue
             print(ccc)
+            grab_count = ccc  # 记录grab次数用于调试
             ccc = 0
             # 计算距离上次检测的实际时间间隔（在更新时间戳之前计算）
             actual_interval = current_time - last_idle_detect_time
@@ -285,6 +306,21 @@ def worker(stream_cfg, config):
             
             global_frame_counter += 1
             
+            # 在第150次检测时保存一张图片，用于验证实时性
+            if global_frame_counter == 150:
+                try:
+                    debug_image_dir = os.path.join(alarm_dir, 'realtime_check')
+                    if not os.path.exists(debug_image_dir):
+                        os.makedirs(debug_image_dir)
+                    # 使用当前系统时间作为文件名
+                    current_timestamp = time.strftime('%Y%m%d_%H%M%S')
+                    debug_image_path = os.path.join(debug_image_dir, f'{name}_realtime_check_{current_timestamp}.jpg')
+                    cv2.imwrite(debug_image_path, frame)
+                    print(f"[{name}] [实时性验证] 已保存第150次检测的图片: {debug_image_path}")
+                    print(f"[{name}] [实时性验证] 请对比图片中监控时间与文件名时间是否一致")
+                except Exception as e:
+                    print(f"[{name}] [ERROR] 保存实时性验证图片失败: {e}")
+            
             # 每次检测都保存一张图片（用于调试查看是哪个教室）
             '''
             print(f"[{name}] [DEBUG] global_frame_counter={global_frame_counter}")
@@ -307,7 +343,7 @@ def worker(stream_cfg, config):
                 print(f"[{name}] [DEBUG] 跳过保存，global_frame_counter({global_frame_counter}) > 55")
             '''
             # 每次检测都打印信息（因为检测频率已经降低）
-            print(f"[{name}] [idle] 检测#{global_frame_counter}, 检测间隔: {actual_interval:.1f}s, 检测到手: {len(hands_info)}个, Palm: {palm_found}, 读取耗时: {read_time*1000:.1f}ms, 处理耗时: {process_time*1000:.1f}ms")
+            print(f"[{name}] [idle] 检测#{global_frame_counter}, 检测间隔: {actual_interval:.1f}s, 检测到手: {len(hands_info)}个, Palm: {palm_found}, 读取耗时: {read_time*1000:.1f}ms, 处理耗时: {process_time*1000:.1f}ms, grab次数: {grab_count}")
             
             # 调试：检测到任何手时都打印详细信息
             if len(hands_info) > 0:

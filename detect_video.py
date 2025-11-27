@@ -216,7 +216,6 @@ def worker(stream_cfg, config):
             if time.time() < cooldown_until:
                 # 持续清空缓冲区，避免积压旧帧
                 ret = cap.grab()
-                time.sleep(0.02)  # 小延迟防止CPU空转，同时保持缓冲区清理
                 continue
             else:
                 print(f"[{name}] 状态切换: cooldown -> idle (冷却结束)")
@@ -247,17 +246,13 @@ def worker(stream_cfg, config):
             
             # 检查是否到达检测间隔时间
             if current_time - last_idle_detect_time < idle_detect_interval:
-                cap.grab()
+                ret, frame = cap.read()
+                if not ret:
+                    time.sleep(0.01)  # 如果读不到，说明缓存区已空，等0.01秒让视频流更新
                 continue
-            
-            # 到达检测时间，先清空缓冲区获取最新帧
-            # 虽然buffer_size=10，但OpenCV可能会积压更多帧，需要主动清空
             
             # 计算距离上次检测的实际时间间隔（在更新时间戳之前计算）
             actual_interval = current_time - last_idle_detect_time
-            
-
-            
             # 读取当前最新帧
             read_start = time.time()
             ret, frame = cap.read()
