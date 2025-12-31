@@ -176,8 +176,9 @@ def mediapipe_detect_hands(frame, max_num_hands=2, min_detection_confidence=0.5)
                                 int(lm.y * frame.shape[0]),
                                 lm.z))
             
-            # 获取手的分类（左/右手），需要翻转因为是镜像
-            hand_type = "Right" if handedness[0].category_name == "Left" else "Left"
+            # 获取手的分类（左/右手）
+            # 新的 Tasks API 返回的是实际的手型，不需要翻转
+            hand_type = handedness[0].category_name
             
             # 分析手势
             pose_info = analyze_hand_pose(keypoints, hand_type, with_z=True)
