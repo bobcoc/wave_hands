@@ -305,7 +305,7 @@ def worker(stream_cfg, config):
             global_frame_counter += 1
             
             # 在第1250次检测时保存一张图片，用于验证实时性
-            if global_frame_counter == 1250:
+            if False and global_frame_counter == 1250:
                 try:
                     debug_image_dir = os.path.join(alarm_dir, 'realtime_check')
                     if not os.path.exists(debug_image_dir):

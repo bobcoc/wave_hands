@@ -15,6 +15,70 @@ os.environ['GLOG_minloglevel'] = '2'  # 0=INFO, 1=WARNING, 2=ERROR, 3=FATAL
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'  # 抑制TensorFlow日志
 os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = 'loglevel;quiet'  # 抑制FFmpeg解码错误
 
+
+def check_gstreamer_support():
+    """
+    检测当前OpenCV是否支持GStreamer后端
+    返回: (是否支持, 详细信息字符串)
+    """
+    try:
+        # 方法1: 检查OpenCV编译信息
+        build_info = cv2.getBuildInformation()
+        gstreamer_supported = 'GStreamer:                   YES' in build_info
+        
+        # 方法2: 尝试获取后端列表（OpenCV 4.x）
+        backends = []
+        if hasattr(cv2, 'videoio_registry'):
+            try:
+                backends = cv2.videoio_registry.getBackends()
+                has_gst_backend = cv2.CAP_GSTREAMER in backends
+            except Exception:
+                has_gst_backend = False
+        else:
+            has_gst_backend = gstreamer_supported
+        
+        # 方法3: 实际测试GStreamer管道（最可靠）
+        test_pipeline = "videotestsrc num-buffers=1 ! videoconvert ! appsink"
+        test_cap = cv2.VideoCapture(test_pipeline, cv2.CAP_GSTREAMER)
+        gst_works = test_cap.isOpened()
+        if test_cap:
+            test_cap.release()
+        
+        info_lines = [
+            f"OpenCV版本: {cv2.__version__}",
+            f"编译时GStreamer支持: {'是' if gstreamer_supported else '否'}",
+            f"GStreamer后端可用: {'是' if has_gst_backend else '否'}",
+            f"GStreamer管道测试: {'通过' if gst_works else '失败'}"
+        ]
+        
+        return gst_works, '\n'.join(info_lines)
+    except Exception as e:
+        return False, f"检测GStreamer支持时出错: {e}"
+
+
+def create_gstreamer_rtsp_pipeline(url, max_buffers=1, drop=True):
+    """
+    创建用于RTSP流的GStreamer管道字符串
+    
+    参数:
+        url: RTSP流地址
+        max_buffers: appsink最大缓冲帧数（默认1，只保留最新帧）
+        drop: 是否丢弃旧帧（默认True）
+    
+    返回:
+        GStreamer管道字符串
+    """
+    # 核心管道：rtspsrc -> decodebin -> videoconvert -> appsink
+    # max-buffers=1 + drop=true 确保只保留最新帧
+    drop_str = "true" if drop else "false"
+    pipeline = (
+        f'rtspsrc location="{url}" latency=0 ! '
+        f'decodebin ! '
+        f'videoconvert ! '
+        f'appsink max-buffers={max_buffers} drop={drop_str} sync=false'
+    )
+    return pipeline
+
 # 读取配置文件
 def load_config(config_path='config.yaml'):
     with open(config_path, 'r', encoding='utf-8') as f:
@@ -39,6 +103,7 @@ def play_video_window(video_path, window_name='Alarm', wait=30):
 def create_video_capture_with_hwdecode(url, config, name):
     """
     创建支持硬件解码的VideoCapture对象
+    优先尝试GStreamer后端（缓冲区控制最有效），失败则回退到FFmpeg
     """
     video_decode_config = config.get('video_decode', {})
     use_hardware_decode = video_decode_config.get('use_hardware_decode', False)
@@ -47,7 +112,37 @@ def create_video_capture_with_hwdecode(url, config, name):
     fallback_to_software = video_decode_config.get('fallback_to_software', True)
     rtsp_transport = video_decode_config.get('rtsp_transport', 'tcp')
     
+    # GStreamer配置
+    use_gstreamer = video_decode_config.get('use_gstreamer', True)  # 默认启用GStreamer
+    gst_max_buffers = video_decode_config.get('gst_max_buffers', 1)  # appsink最大缓冲帧数
+    gst_drop = video_decode_config.get('gst_drop', True)  # 是否丢弃旧帧
+    
     cap = None
+    
+    # 优先尝试GStreamer后端（仅对RTSP流）
+    if use_gstreamer and 'rtsp://' in url:
+        try:
+            gst_supported, gst_info = check_gstreamer_support()
+            if gst_supported:
+                print(f"[{name}] 尝试使用GStreamer后端（缓冲区控制最有效）")
+                pipeline = create_gstreamer_rtsp_pipeline(url, gst_max_buffers, gst_drop)
+                print(f"[{name}] GStreamer管道: {pipeline}")
+                cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+                if cap.isOpened():
+                    print(f"[{name}] GStreamer后端初始化成功! max-buffers={gst_max_buffers}, drop={gst_drop}")
+                    return cap
+                else:
+                    print(f"[{name}] GStreamer管道打开失败，尝试其他后端")
+                    if cap:
+                        cap.release()
+                    cap = None
+            else:
+                print(f"[{name}] GStreamer不可用: {gst_info}")
+        except Exception as e:
+            print(f"[{name}] GStreamer后端创建异常: {e}")
+            if cap:
+                cap.release()
+            cap = None
     
     # 根据传输协议修改URL
     if rtsp_transport.lower() == 'tcp' and 'rtsp://' in url:
@@ -56,9 +151,9 @@ def create_video_capture_with_hwdecode(url, config, name):
     else:
         modified_url = url
     
-    if use_hardware_decode:
+    if use_hardware_decode and cap is None:
         try:
-            print(f"[{name}] 尝试使用硬件解码器，传输协议: {rtsp_transport}")
+            print(f"[{name}] 尝试使用FFmpeg硬件解码器，传输协议: {rtsp_transport}")
             # 使用FFmpeg后端
             if decode_backend.lower() == 'ffmpeg':
                 cap = cv2.VideoCapture(modified_url, cv2.CAP_FFMPEG)
@@ -76,19 +171,19 @@ def create_video_capture_with_hwdecode(url, config, name):
                     cap.set(cv2.CAP_PROP_FPS, 25)  # 限制FPS减少缓冲压力
                     # 设置RTSP传输协议为TCP（更稳定但延迟更高）
                     cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 30000)  # 30秒超时
-                    cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 30000)  # 30秒读取超时
+                    cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, 1000)  # 1秒读取超时
                 except Exception as e:
                     print(f"[{name}] 硬件解码参数设置警告: {e}")
                 
-                print(f"[{name}] 硬件解码器初始化成功")
+                print(f"[{name}] FFmpeg硬件解码器初始化成功（注意：缓冲区设置可能无效）")
                 return cap
             else:
-                print(f"[{name}] 硬件解码器初始化失败")
+                print(f"[{name}] FFmpeg硬件解码器初始化失败")
                 if cap:
                     cap.release()
                     cap = None
         except Exception as e:
-            print(f"[{name}] 硬件解码器创建异常: {e}")
+            print(f"[{name}] FFmpeg硬件解码器创建异常: {e}")
             if cap:
                 cap.release()
                 cap = None
@@ -100,7 +195,7 @@ def create_video_capture_with_hwdecode(url, config, name):
             cap = cv2.VideoCapture(url)
             if cap.isOpened():
                 cap.set(cv2.CAP_PROP_BUFFERSIZE, buffer_size)
-                print(f"[{name}] 软件解码器初始化成功")
+                print(f"[{name}] 软件解码器初始化成功（注意：缓冲区设置可能无效）")
             else:
                 print(f"[{name}] 软件解码器也初始化失败")
         except Exception as e:
@@ -210,7 +305,7 @@ def worker(stream_cfg, config):
     print_interval = 10  # 每N帧打印一次，减少I/O开销
     last_frame_time = time.time()  # 用于计算帧间隔
     last_idle_detect_time = time.time()  # 上次idle检测的时间戳（初始化为当前时间）
-
+    ccc = 0
     while True:
         if state == 'cooldown':
             if time.time() < cooldown_until:
@@ -240,24 +335,42 @@ def worker(stream_cfg, config):
             else:
                 alarm_buf_len = 75
             print(f"[{name}] 连接成功，fps={fps}, 分辨率={width}x{height}, 报警缓冲区长度={alarm_buf_len}")
-
         if state == 'idle':
             current_time = time.time()
             
             # 检查是否到达检测间隔时间
-            if current_time - last_idle_detect_time < idle_detect_interval:
-                ret, frame = cap.read()
+            time_since_last = current_time - last_idle_detect_time
+            if time_since_last < idle_detect_interval:
+                # 预测性避免grab卡住：估算理论上应该积累的帧数
+                if fps > 0:
+                    # 理论帧数 = 已经过去的时间 * 帧率
+                    expected_frames = int(time_since_last * fps)
+                    # 保留一些安全边际，当grab次数接近理论帧数时停止
+                    safety_margin = 5  # 保留5帧的安全边际
+                    if ccc >= expected_frames - safety_margin:
+                        # 已经接近缓冲区底部，休眠等待新帧
+                        time.sleep(0.025)  # 休眠40ms，约1帧时间
+                # 正常grab清空缓冲区
+                ret = cap.grab()
                 if not ret:
-                    time.sleep(0.01)  # 如果读不到，说明缓存区已空，等0.01秒让视频流更新
+                    # grab失败说明流有问题，直接重连
+                    print(f"[{name}] grab失败，流可能中断，重连")
+                    cap.release()
+                    cap = None
+                    ccc = 0
+                    continue
+                ccc = ccc + 1
                 continue
-            
+            # print(ccc)
+            grab_count = ccc  # 记录grab次数用于调试
+            ccc = 0
             # 计算距离上次检测的实际时间间隔（在更新时间戳之前计算）
             actual_interval = current_time - last_idle_detect_time
+            
             # 读取当前最新帧
             read_start = time.time()
             ret, frame = cap.read()
             read_time = time.time() - read_start
-            last_idle_detect_time = current_time  # 更新检测时间戳
             
             if not ret:
                 print(f"[{name}] idle模式读取帧失败，重连")
@@ -265,9 +378,8 @@ def worker(stream_cfg, config):
                 cap = None
                 continue
             
-            last_frame_time = current_time  # 更新帧时间（供active状态使用）
-            
             # 处理当前帧
+            process_start = time.time()
             try:
                 output, hands_info = detector.process_frame(frame)
             except Exception as e:
@@ -276,12 +388,32 @@ def worker(stream_cfg, config):
                 traceback.print_exc()
                 # 出错时跳过这一帧，继续下一次检测
                 continue
+            process_time = time.time() - process_start
+            
+            # 在处理完成后再更新时间戳，确保包含读取和处理的耗时
+            last_idle_detect_time = time.time()
+            last_frame_time = last_idle_detect_time  # 更新帧时间（供active状态使用）
                 
             # 只有检测到手掌（Palm）才算
             palm_found = any(hand['is_palm_up'] for hand in hands_info)
             
             global_frame_counter += 1
             
+            # 在第1250次检测时保存一张图片，用于验证实时性
+            if global_frame_counter == 1250:
+                try:
+                    debug_image_dir = os.path.join(alarm_dir, 'realtime_check')
+                    if not os.path.exists(debug_image_dir):
+                        os.makedirs(debug_image_dir)
+                    # 使用当前系统时间作为文件名
+                    current_timestamp = time.strftime('%Y%m%d_%H%M%S')
+                    debug_image_path = os.path.join(debug_image_dir, f'{name}_realtime_check_{current_timestamp}.jpg')
+                    cv2.imwrite(debug_image_path, frame)
+                    print(f"[{name}] [实时性验证] 已保存第150次检测的图片: {debug_image_path}")
+                    print(f"[{name}] [实时性验证] 请对比图片中监控时间与文件名时间是否一致")
+                except Exception as e:
+                    print(f"[{name}] [ERROR] 保存实时性验证图片失败: {e}")
+
             # 每次检测都保存一张图片（用于调试查看是哪个教室）
             '''
             print(f"[{name}] [DEBUG] global_frame_counter={global_frame_counter}")
@@ -304,7 +436,7 @@ def worker(stream_cfg, config):
                 print(f"[{name}] [DEBUG] 跳过保存，global_frame_counter({global_frame_counter}) > 55")
             '''
             # 每次检测都打印信息（因为检测频率已经降低）
-            print(f"[{name}] [idle] 检测#{global_frame_counter}, 检测间隔: {actual_interval:.1f}s, 检测到手: {len(hands_info)}个, Palm: {palm_found}, 读取耗时: {read_time*1000:.1f}ms")
+            print(f"[{name}] [idle] 检测#{global_frame_counter}, 检测间隔: {actual_interval:.1f}s, 检测到手: {len(hands_info)}个, Palm: {palm_found}, 读取耗时: {read_time*1000:.1f}ms, 处理耗时: {process_time*1000:.1f}ms, grab次数: {grab_count}")
             
             # 调试：检测到任何手时都打印详细信息
             if len(hands_info) > 0:
