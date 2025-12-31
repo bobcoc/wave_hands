@@ -2,8 +2,14 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import os
+import urllib.request
 
-mp_hands = mp.solutions.hands
+from mediapipe.tasks import python
+from mediapipe.tasks.python import vision
+
+# 模型文件路径
+_MODEL_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'weight', 'hand_landmarker.task')
+_MODEL_URL = 'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task'
 
 # 进程级全局变量，每个进程独立的MediaPipe实例
 _process_mediapipe_hands = None
@@ -11,10 +17,34 @@ _hands_call_count = 0
 _hands_reset_interval = 1000  # 每1000次调用重置一次，防止内存泄漏
 
 
+def _ensure_model_downloaded():
+    """确保模型文件已下载"""
+    if os.path.exists(_MODEL_PATH):
+        return _MODEL_PATH
+    
+    # 创建目录
+    os.makedirs(os.path.dirname(_MODEL_PATH), exist_ok=True)
+    
+    print(f"正在下载 MediaPipe Hand Landmarker 模型...")
+    print(f"URL: {_MODEL_URL}")
+    print(f"保存到: {_MODEL_PATH}")
+    
+    try:
+        urllib.request.urlretrieve(_MODEL_URL, _MODEL_PATH)
+        print("模型下载完成!")
+    except Exception as e:
+        print(f"模型下载失败: {e}")
+        print(f"请手动下载模型文件并放到: {_MODEL_PATH}")
+        raise
+    
+    return _MODEL_PATH
+
+
 def get_mediapipe_hands_instance(max_num_hands=2, min_detection_confidence=0.5):
     """
     获取或创建当前进程的MediaPipe Hands实例（进程安全）
     每个进程有独立的实例，避免每次调用都初始化
+    使用新的 MediaPipe Tasks API
     """
     global _process_mediapipe_hands, _hands_call_count
     
@@ -33,11 +63,20 @@ def get_mediapipe_hands_instance(max_num_hands=2, min_detection_confidence=0.5):
     if _process_mediapipe_hands is None:
         pid = os.getpid()
         print(f"[PID:{pid}] 创建 MediaPipe Hands 实例...")
-        _process_mediapipe_hands = mp_hands.Hands(
-            static_image_mode=False,
-            max_num_hands=max_num_hands,
-            min_detection_confidence=min_detection_confidence
+        
+        # 确保模型已下载
+        model_path = _ensure_model_downloaded()
+        
+        # 使用新的 Tasks API 创建 HandLandmarker
+        base_options = python.BaseOptions(model_asset_path=model_path)
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options,
+            num_hands=max_num_hands,
+            min_hand_detection_confidence=min_detection_confidence,
+            min_hand_presence_confidence=min_detection_confidence,
+            min_tracking_confidence=0.5
         )
+        _process_mediapipe_hands = vision.HandLandmarker.create_from_options(options)
         print(f"[PID:{pid}] MediaPipe Hands 实例创建完成")
     
     _hands_call_count += 1
@@ -115,25 +154,30 @@ def mediapipe_detect_hands(frame, max_num_hands=2, min_detection_confidence=0.5)
     - keypoints: List[(x, y)]，21个关键点坐标
     - handedness: str，"Left" or "Right"
     - is_palm_up: bool，True表示手掌朝上/前
+    使用新的 MediaPipe Tasks API
     """
     # 复用MediaPipe实例（关键优化！避免每次都初始化）
-    hands = get_mediapipe_hands_instance(max_num_hands, min_detection_confidence)
+    hand_landmarker = get_mediapipe_hands_instance(max_num_hands, min_detection_confidence)
     
-    image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = hands.process(image)
+    # 转换为 RGB 并创建 MediaPipe Image
+    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_frame)
+    
+    # 检测手部
+    results = hand_landmarker.detect(mp_image)
     hands_info = []
     
-    if results.multi_hand_landmarks and results.multi_handedness:
-        for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+    if results.hand_landmarks and results.handedness:
+        for hand_landmarks, handedness in zip(results.hand_landmarks, results.handedness):
             # 获取关键点坐标
             keypoints = []
-            for lm in hand_landmarks.landmark:
+            for lm in hand_landmarks:
                 keypoints.append((int(lm.x * frame.shape[1]), 
                                 int(lm.y * frame.shape[0]),
                                 lm.z))
             
             # 获取手的分类（左/右手），需要翻转因为是镜像
-            hand_type = "Right" if handedness.classification[0].label == "Left" else "Left"
+            hand_type = "Right" if handedness[0].category_name == "Left" else "Left"
             
             # 分析手势
             pose_info = analyze_hand_pose(keypoints, hand_type, with_z=True)
